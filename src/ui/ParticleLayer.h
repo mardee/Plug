@@ -46,7 +46,7 @@ public:
         if (w <= 0.0f || h <= 0.0f)
             return;
 
-        const float bright = 0.55f + 1.05f * energy;
+        const float bright = 0.22f + 0.40f * energy;
         const float grow   = 0.90f + 0.70f * energy;
 
         for (const auto& d : dots)
@@ -72,18 +72,12 @@ private:
     enum class Kind { dust, spark, comet, orbit };
 
     //--------------------------------------------------------------------------
-    struct Pt { float x = 0.0f, y = 0.0f; };
-
-    static constexpr int kTrail = 6;
-
     struct Dot
     {
         float x = 0.0f, y = 0.0f, vx = 0.0f, vy = 0.0f;
         float u = 0.0f;
         float size = 1.0f, phase = 0.0f, rate = 1.0f;
         Kind  kind = Kind::dust;
-        std::array<Pt, kTrail> hist {};
-        int   head = 0;
     };
 
 
@@ -94,7 +88,7 @@ private:
         g.setColour (c.withAlpha (juce::jlimit (0.0f, 0.35f, a * 0.30f)));
         g.fillEllipse (x - r, y - r, r * 2.0f, r * 2.0f);
         const float core = r * 0.42f;
-        g.setColour (c.withAlpha (juce::jlimit (0.0f, 0.95f, a)));
+        g.setColour (c.withAlpha (juce::jlimit (0.0f, 0.55f, a * 0.6f)));
         g.fillEllipse (x - core, y - core, core * 2.0f, core * 2.0f);
     }
 
@@ -103,17 +97,8 @@ private:
     void drawDust (juce::Graphics& g, const Dot& d, float px, float py,
                    float s, float a, juce::Colour c)
     {
-        // 残影：历史位置是像素，间距只有 1~2 px，所以隔帧取、半径给足，才看得见拖尾
-        for (int k = kTrail - 1; k >= 2; k -= 2)
-        {
-            const float f = 1.0f - (float) k / (float) kTrail;
-            const auto& hp = d.hist[(d.head + kTrail - k) % kTrail];
-            const float r = s * (1.2f + 1.4f * f);
-            g.setColour (c.withAlpha (juce::jlimit (0.0f, 0.8f, a * 0.30f * f)));
-            g.fillEllipse (hp.x - r, hp.y - r, r * 2.0f, r * 2.0f);
-        }
-
         softDot (g, px, py, s * 3.2f, c, a);
+        juce::ignoreUnused (d);
     }
 
     // 十字闪 + 峰值时光晕
@@ -131,30 +116,15 @@ private:
 
         // 闪光是一颗更亮的点，外加四道很短的芒。芒长按像素封顶，绝不拉成线。
         softDot (g, px, py, s * 4.0f, c, a);
-        g.setColour (c.withAlpha (juce::jlimit (0.0f, 0.9f, a * pulse)));
-        const float L = juce::jmin (14.0f, s * 3.0f);
-        g.drawLine (px - L, py, px + L, py, 1.2f);
-        g.drawLine (px, py - L, px, py + L, 1.2f);
+        juce::ignoreUnused (pulse);
     }
 
     // 彗星：头是实心点，尾巴沿速度反方向拉一条渐隐线
     void drawComet (juce::Graphics& g, const Dot& d, float px, float py,
                     float s, float a, float w, float h, juce::Colour c)
     {
-        // 尾巴长度按像素封顶。上一版乘了窗口宽度，1564px 的窗口上每条尾巴两万像素，
-        // 横贯整个面板 —— 截图里那些细线就是这个。
-        const float len = juce::jmin (26.0f, s * 8.0f);
-        // vx/vy 是归一化坐标（每帧约 0.003），先还原成像素再取方向，尾巴才是像素级的
-        const float dx  = d.vx * w, dy = d.vy * h;
-        const float n   = std::sqrt (dx * dx + dy * dy) + 1.0e-3f;
-        const float tx  = px - dx / n * len;
-        const float ty  = py - dy / n * len;
-
-        g.setColour (c.withAlpha (juce::jlimit (0.0f, 0.55f, a * 0.45f)));
-        g.drawLine (px, py, tx, ty, juce::jmax (1.4f, s * 0.9f));
-
         softDot (g, px, py, s * 3.6f, c, a);
-        juce::ignoreUnused (w, h);
+        juce::ignoreUnused (d, w, h);
     }
 
     // 轨道碎屑：绕中心转的三颗小点，中心自己也在飘
@@ -210,18 +180,11 @@ private:
                 d.vx = juce::jlimit (-0.0040f, 0.0040f, d.vx);
             }
 
-            if (d.y < -0.05f) { respawn (d, true); }
-
-            // 每帧有约 2% 的粒子按当前权重重新抽色。只靠飘出屏幕再重生的话，
-            // 拧旋钮后要等十几秒颜色分布才变过来。
-            else if (palette != nullptr && rand01() < 0.02f)
-                d.u = palette->samplePos (rand01());
+            // 颜色只在重生时按旋钮权重抽一次。中途改 u 就是突然变色。
+            if (d.y < -0.05f) respawn (d, true);
             if (d.x < -0.05f)       d.x = 1.05f;
             else if (d.x > 1.05f)   d.x = -0.05f;
 
-            // 记录历史位置，拖尾用。坐标换成像素，绘制时不用再乘宽高
-            d.head = (d.head + 1) % kTrail;
-            d.hist[d.head] = { d.x * w, d.y * h };
         }
     }
 
@@ -245,7 +208,6 @@ private:
             d.u     = rand01();   // 调色板此时还没接上，第一帧 step() 会按权重重抽
             d.phase = rand01() * 6.28318f;
             d.rate  = 0.6f + rand01() * 2.2f;
-            d.head  = 0;
 
             // 比例：星尘最多，闪和彗星点缀，轨道碎屑最少（它占面积大）
             const float r = rand01();
@@ -266,7 +228,6 @@ private:
                 d.vy = -0.0006f - rand01() * 0.0015f;
             }
 
-            for (auto& p : d.hist) p = { d.x, d.y };
         }
 
         t = 0.0f;
