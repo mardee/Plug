@@ -412,8 +412,9 @@ void EZampEditor::pushVisualState()
     lastSpecTick = tick;
 
     spec.readInto (specBuf.data(), (int) specBuf.size());
+    spec.readPeaksInto (peakBuf.data(), (int) peakBuf.size());
 
-    spectrumLayer.setSpectrum (specBuf.data(), (int) specBuf.size(), fresh);
+    spectrumLayer.setSpectrum (specBuf.data(), (int) specBuf.size(), fresh, peakBuf.data());
     spectrumLayer.setEnergy (spec.getEnergy());
     particleLayer.setEnergy (spec.getEnergy());
 

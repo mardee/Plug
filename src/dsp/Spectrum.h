@@ -116,6 +116,15 @@ public:
             dest[i] = bins[(size_t) i].load();
     }
 
+    // 峰值保持是在 analyse() 里算好的（顶上去、否则 ×0.94 慢慢掉）。
+    // 之前只算不读，界面永远看不到。
+    void readPeaksInto (float* dest, int num) const noexcept
+    {
+        const int n = juce::jmin (num, kNumBins);
+        for (int i = 0; i < n; ++i)
+            dest[i] = peaks[(size_t) i].load();
+    }
+
     float getEnergy() const noexcept { return energy.load(); }
 
     // 每做完一次 FFT 就 +1。界面拿它判断"这一帧有没有新数据" ——

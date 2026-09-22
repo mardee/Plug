@@ -358,7 +358,10 @@ static void testNoParamExplosion()
             peak = std::max (peak, std::abs (v));
         }
 
-    report ("满刻度输入不产生 NaN / 失控增益", finite, std::string ("peak = ") + n2 (peak));
+    // 输出端有 −1 dBFS 的软限（线性 0.8913）。正常电平下它是透明的，
+    // 但满刻度输入必须被它咬住 —— 之前这条只要求 finite，peak 可以到 1.5。
+    report ("满刻度输入不产生 NaN，且被输出软限咬住（peak ≤ 0.90）",
+            finite && peak <= 0.90f, std::string ("peak = ") + n2 (peak));
 
     // 静音输入不应产生自激。
     // 注意：链路里有 wow/flutter 的延迟线，静音后仍会把历史样本吐完，
@@ -695,7 +698,8 @@ static void testWildMode()
                 peak = std::max (peak, std::abs (v));
             }
 
-        report ("狂野满档不产生 NaN / 失控增益", finite, std::string ("peak = ") + n2 (peak));
+        report ("狂野满档不产生 NaN，且被输出软限咬住（peak ≤ 0.90）",
+                finite && peak <= 0.90f, std::string ("peak = ") + n2 (peak));
     }
 }
 
@@ -814,7 +818,8 @@ static void testGrit()
         for (int i = 0; i < N; ++i) peak = juce::jmax (peak, std::abs (s[i]));
 
         std::cout << "     狂野满档 peak = " << std::fixed << std::setprecision (3) << peak << "\n";
-        report ("狂野满档（含毛刺）不炸", peak < 2.0f, "peak = " + n1 (peak));
+        report ("狂野满档（含毛刺）不炸，且被输出软限咬住（peak ≤ 0.90）",
+                peak <= 0.90f, "peak = " + n1 (peak));
     }
 }
 

@@ -93,6 +93,7 @@ private:
 
     // 每帧从分析器里捞出来的频谱副本，交给背景层画
     std::array<float, SpectrumAnalyser::kNumBins> specBuf {};
+    std::array<float, SpectrumAnalyser::kNumBins> peakBuf {};
     uint32_t lastSpecTick = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EZampEditor)

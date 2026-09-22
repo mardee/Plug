@@ -36,12 +36,19 @@ public:
     void setPalette (const TintPalette* p) noexcept { palette = p; }
 
     // fresh = 这一帧是否真的有新数据。宿主停止调用 processBlock 时用它让柱子落下来。
-    void setSpectrum (const float* values, int num, bool fresh)
+    // peakValues = 分析器算好的峰值保持（可空）。衰减在分析器里做，这里只画。
+    void setSpectrum (const float* values, int num, bool fresh,
+                      const float* peakValues = nullptr)
     {
         const int n = juce::jmin (num, kNumBins);
 
         for (int i = 0; i < n; ++i)
+        {
             spec[(size_t) i] = values[i];
+            peaks[(size_t) i] = peakValues != nullptr
+                              ? juce::jmax (values[i], peakValues[i])
+                              : values[i];
+        }
 
         if (! fresh)
             for (auto& v : spec)
@@ -83,10 +90,6 @@ private:
             return;
 
         t += 1.0f / 30.0f;
-
-        for (auto& p : peaks)
-            p *= 0.955f;
-
         repaint();
     }
 
@@ -180,6 +183,16 @@ private:
         g.setGradientFill (tintGrad (0.95f));
         g.strokePath (cap, juce::PathStrokeType (2.2f, juce::PathStrokeType::curved,
                                                  juce::PathStrokeType::rounded));
+
+        // 3. 峰值保持线：比曲面更亮更细，落得比实时频谱慢
+        juce::Path hold;
+        hold.startNewSubPath (0.0f, h - peaks[0] * maxH);
+        for (int i = 1; i < kNumBins; ++i)
+            hold.lineTo ((float) i / (float) (kNumBins - 1) * w, h - peaks[(size_t) i] * maxH);
+
+        g.setGradientFill (tintGrad (0.85f));
+        g.strokePath (hold, juce::PathStrokeType (1.4f, juce::PathStrokeType::curved,
+                                                  juce::PathStrokeType::rounded));
     }
 
     //--------------------------------------------------------------------------
