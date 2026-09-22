@@ -1,0 +1,29 @@
+# 编译产物（cmake 重新生成）
+/build/
+
+# JUCE 框架本体（9.0.2，第三方代码，不纳入本仓库历史）
+# 重新获取：git clone --branch 9.0.2 --depth 1 https://github.com/juce-framework/JUCE.git JUCE
+/JUCE/
+
+# macOS
+.DS_Store
+
+# 试听素材与 Studio One 工程（体积大，且工程是二进制）
+/test/
+
+# 编辑器与工具缓存
+.idea/
+.vscode/
+*.user
+
+
+# macOS
+.DS_Store
+
+# 试听素材与 Studio One 工程（体积大，且工程是二进制）
+/test/
+
+# 编辑器与工具缓存
+.idea/
+.vscode/
+*.user
