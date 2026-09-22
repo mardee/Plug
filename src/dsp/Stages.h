@@ -459,6 +459,8 @@ public:
         {
             pre[ch].reset();
             lp[ch].reset();
+            hp[ch].reset();
+            hp2[ch].reset();
             dc[ch].reset();
         }
         update();
@@ -470,6 +472,8 @@ public:
         {
             pre[ch].reset();
             lp[ch].reset();
+            hp[ch].reset();
+            hp2[ch].reset();
             dc[ch].reset();
         }
     }
@@ -493,7 +497,8 @@ public:
 
         float       harm    = (shaped - boosted) * kHarmNorm;       // 3a. 纯谐波
         harm = lp[ch].process (harm);                               // 3b. 只留低中频（身体）
-        harm = dc[ch].process (harm);                               // 3c. 掐 DC
+        harm = hp[ch].process (hp2[ch].process (harm));              // 3c. 滤掉基频以下（两级）
+        harm = dc[ch].process (harm);                               // 3d. 掐 DC
 
         // 4. 混合 + 软限幅（同 Air）。Weight 的 pre boost 最高 +22 dB，
         //    比 Air 更容易冲出线性区，这一层限幅更不能省。
@@ -507,6 +512,10 @@ private:
         const float preDb  = weightNorm * 22.0f * weightScale_;
         // 低通截止：保留 2f~6f 谐波（80Hz 基频 → 160~480Hz 身体区），滚掉更高的 presence
         const float lpHz   = juce::jlimit (450.0f, 950.0f, lowShelfHz_ * 6.0f);
+        // 高通放在基频以下。不滤的话，前面折叠级造的次八度会混进谐波增量，
+        // 再被 depth 放大：贝斯推 weight 时次八度涨 19 dB，盖过基频，就是爆音。
+        // 切点 120 Hz：50 Hz 次八度两级约 -15 dB。代价是 100 Hz 基频被削 1.3 dB，方向是变小不是变大。
+        const float hpHz   = 120.0f;
         drive_ = 1.0f + weightNorm * 2.5f * weightScale_;          // Weight 0→1 : drive 1.0→3.5
         depth_ = weightNorm * 2.2f * weightScale_;                 // 混合深度随 Weight 线性
 
@@ -514,6 +523,8 @@ private:
         {
             pre[ch].setLowShelf (sampleRate, lowShelfHz_, 0.707f, preDb);
             lp[ch].setOnePoleLP  (sampleRate, lpHz);
+            hp[ch].setOnePoleHP  (sampleRate, hpHz);
+            hp2[ch].setOnePoleHP (sampleRate, hpHz);
         }
     }
 
@@ -527,6 +538,8 @@ private:
     float    drive_ = 1.0f, depth_ = 0.0f;
     Biquad    pre[kMaxChannels];
     Biquad    lp[kMaxChannels];
+    Biquad    hp[kMaxChannels];
+    Biquad    hp2[kMaxChannels];
     DCBlocker dc[kMaxChannels];
 };
 
@@ -586,6 +599,9 @@ public:
         }
 
         // 2. 次八度：正向上穿零 → 二分频 → f/2 方波 → 低通取基频
+        // 零交叉和包络都看输入 x，不看已经叠了次八度的 y。看 y 的话，
+        // Weight 抬起来的 2 次谐波会让检测器锁到错误的周期上，贝斯一推
+        // weight 次八度就盖过基频（实测 weight 0 → 满档：−11.7 dB → +0.7 dB）。
         if (subNorm > 0.001f)
         {
             if (x > 0.0f && prev[ch] <= 0.0f)
@@ -869,7 +885,10 @@ public:
 private:
     void update() noexcept
     {
-        const float lowGainDb  = weightNorm * (wild_ ? 13.0f : 7.5f);
+        // 狂野低架 13 → 9 dB。13 dB 叠在次八度上会把贝斯峰值从 0.10 推到 0.91，
+        // 后面的毛刺再放大到 1.44，输出级只能把已经削过的波形压回去 —— 爆音。
+        // 厚度交给 Weight 激励器（×1.7 不变），低架只负责托底。
+        const float lowGainDb  = weightNorm * (wild_ ? 9.0f : 7.5f);
         const float tightDb    = -weightNorm * 3.5f;   // 提升的同时收紧，Pultec 的精髓
         const float presenceDb = 2.0f;                 // 固定 +2dB：不再被 Weight 偷偷抬高中频
         const float airGainDb  = airNorm * (wild_ ? 20.0f : 13.0f) * airScale_;

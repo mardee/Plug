@@ -475,8 +475,8 @@ static void testExciterPurity()
                   << std::setprecision (2) << leakDb << " dB   2次 200 "
                   << harm2Db << " dB\n" << std::noshowpos;
 
-        report ("Weight 不放大基频（|泄漏| < 1 dB）",
-                std::abs (leakDb) < 1.0f, std::string ("实测 ") + n2 (leakDb) + " dB");
+        report ("Weight 不放大基频（泄漏 < 2 dB；负值是高通削掉的，不是 presence）",
+                leakDb > -2.0f && leakDb < 1.0f, std::string ("实测 ") + n2 (leakDb) + " dB");
         report ("Weight 真的产生谐波（2 次 > -60 dB）",
                 harm2Db > -60.0f, std::string ("2次 = ") + n1 (harm2Db) + " dB");
     }
@@ -908,7 +908,6 @@ static void testDriveStrength()
             std::string ("drive 0 = ") + n1 (d0.second) + " dB → 满档 " + n1 (d100.second) + " dB");
 }
 
-//==============================================================================
 int main()
 {
     std::cout << "=========================================================\n";

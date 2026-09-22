@@ -263,7 +263,10 @@ void SignalChain::applyParams()
 
     // 折叠、次八度、毛刺只在狂野模式有意义。用 wm 缩放而不是硬切，
     // 这样开关时它们是渐入渐出的，不会在一个采样点上突然出现。
-    fold.setParams (drive * wm, smWeight * wm);
+    // 次八度不跟 weight 走。贝斯上 weight 拉满时，次八度方波会盖过基频
+    // 12 dB 以上（实测 tone 级峰值从 0.10 冲到 0.91），听感就是爆音。
+    // 次八度是狂野模式本身的味道，给一个固定的保守量就够。
+    fold.setParams (drive * wm, 0.18f * wm);
     grit.setParams (drive * wm, smWeight * wm);
 
 }
