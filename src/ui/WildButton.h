@@ -1,23 +1,20 @@
 #pragma once
 
 #include <juce_gui_basics/juce_gui_basics.h>
-#include "Graffiti.h"
 #include "OzoLookAndFeel.h"
 
 namespace ozo
 {
 
 //==============================================================================
-// WILD —— 涂鸦喷漆风格的模式开关
+// WILD —— 两张手绘涂鸦，不用字体
 //
-// 不只是换个字体：喷漆罐的感觉来自四件事叠在一起，缺一件就像普通按钮贴了张字：
-//   1. 手写涂鸦字形 + 描边（描边是 tag 的灵魂，光填色会很平）
-//   2. 整体歪一点（-5°），手写的东西不会横平竖直
-//   3. 字下面挂"流挂"（drip）—— 喷漆往下淌的那一滴
-//   4. 周围一圈喷溅点（spray dots）—— 罐子喷出来必然有飞溅
+// 关：一只闭着的眼睛，眼角挂一滴。安静，但在看着你。
+// 开：一只睁开的眼睛，虹膜是主题色渐变，瞳孔里有高光；
+//     眼睛上方三道闪电，下面喷漆流挂，周围一圈飞溅。
 //
-// 颜色走 OzoCol，所以常规/狂野两套主题自动跟着换。
-// 打开时外圈有光晕，并由 setFlicker() 驱动轻微闪烁（编辑器 30 Hz 定时器喂值）。
+// 两张都是路径画出来的，颜色走 OzoCol，常规/狂野主题自动跟着换。
+// 打开时整体跟着 flicker 轻微缩放，外圈有呼吸光晕。
 //==============================================================================
 class WildButton : public juce::Button
 {
@@ -28,7 +25,6 @@ public:
         setTooltip ("狂野模式：换算法 + 全部加倍 + 界面转深色");
     }
 
-    // 0..1，由编辑器定时器喂进来。只有打开时才有视觉意义。
     void setFlicker (float f) noexcept
     {
         const float v = juce::jlimit (0.0f, 1.0f, f);
@@ -44,27 +40,21 @@ protected:
     {
         const bool on   = getToggleState();
         const auto area = getLocalBounds().toFloat().reduced (1.0f);
-        const float r   = 7.0f;
-
+        const float r   = 8.0f;
         const float push = down ? 1.0f : 0.0f;
 
-        // --- 外光晕：只在打开时，强度被 flicker 轻微调制 ---
         if (on)
         {
-            const float glowA = 0.42f + 0.22f * flicker;
-            // 这个 JUCE 版本没有 isRadial / r 成员了 —— 径向只能走构造函数：
-            // point1 = 圆心，point2 到圆心的距离就是半径。
-            const float rad = area.getWidth() * 0.85f;
+            const float glowA = 0.40f + 0.30f * flicker;
+            const float rad = area.getWidth() * 0.95f;
             juce::ColourGradient halo (OzoCol::tint[0].withAlpha (glowA),
                                        area.getCentreX(), area.getCentreY(),
                                        OzoCol::tint[0].withAlpha (0.0f),
-                                       area.getCentreX() + rad, area.getCentreY(),
-                                       true);
+                                       area.getCentreX() + rad, area.getCentreY(), true);
             g.setGradientFill (halo);
-            g.fillRoundedRectangle (area.expanded (7.0f), r + 7.0f);
+            g.fillRoundedRectangle (area.expanded (8.0f), r + 8.0f);
         }
 
-        // --- 底：关 = 深紫黑；开 = 炽红→熔橙的喷漆渐变 ---
         juce::ColourGradient base (
             on ? OzoCol::tint[0] : OzoCol::text,
             area.getX(), area.getY(),
@@ -79,129 +69,150 @@ protected:
             g.fillRoundedRectangle (area.translated (0.0f, push), r);
         }
 
-        // --- 边：开的时候用亮色描边 + 一点点抖 ---
         g.setColour (on ? juce::Colour (0xFFFDF3C8).withAlpha (0.92f)
                         : OzoCol::panelEdge.darker (0.25f));
-        g.drawRoundedRectangle (area.translated (0.0f, push), r,
-                                on ? 2.0f : 1.2f);
+        g.drawRoundedRectangle (area.translated (0.0f, push), r, on ? 2.0f : 1.2f);
 
-        // ---------------------------------------------------------------------
-        // 字：涂鸦字形 + 描边 + 歪 5 度
-        // ---------------------------------------------------------------------
-        // 字号是按字体 em 算的，手写字形的实际墨迹高度往往远小于 em，
-        // 直接按 height 取会有大片空白。所以先按参考字号取出字形路径，
-        // 再按实际包围盒缩放去填满按钮 —— 不管换什么字体都不会留空。
-        auto f = Graffiti::font (100.0f, 0.03f);
+        // 涂鸦几乎铺满按钮。上一版在 30px 高的按钮里再缩一圈，图案只剩十几像素，
+        // 根本看不出画的是什么。
+        const float breathe = on ? 1.0f + (flicker - 0.5f) * 0.04f : 1.0f;
+        auto box = area.reduced (area.getWidth() * 0.06f, area.getHeight() * 0.10f)
+                       .translated (0.0f, push);
+        box = box.withSizeKeepingCentre (box.getWidth() * breathe, box.getHeight() * breathe);
 
-        juce::GlyphArrangement ga;
-        ga.addLineOfText (f, "WILD", 0.0f, 0.0f);
+        if (on) drawEyeOpen (g, box);
+        else    drawStar    (g, box);
 
-        juce::Path textPath;
-        ga.createPath (textPath);
-        auto tb = textPath.getBounds();
-
-        const float targetW = area.getWidth()  * (on ? 0.90f : 0.86f);
-        const float targetH = area.getHeight() * (on ? 0.70f : 0.66f);
-        const float fit = juce::jmin (targetW / juce::jmax (1.0e-3f, tb.getWidth()),
-                                      targetH / juce::jmax (1.0e-3f, tb.getHeight()));
-
-        const float cx = area.getCentreX();
-        const float cy = area.getCentreY() + push - area.getHeight() * 0.04f;
-        const float tilt = juce::degreesToRadians (-5.0f)
-                         + (on ? (flicker - 0.5f) * 0.012f : 0.0f);
-
-        // 屏幕坐标系里的实际字形范围 —— 流挂和喷溅要用它
-        const juce::Rectangle<float> textBox (cx - tb.getWidth()  * fit * 0.5f,
-                                              cy - tb.getHeight() * fit * 0.5f,
-                                              tb.getWidth()  * fit,
-                                              tb.getHeight() * fit);
-
-        {
-            juce::Graphics::ScopedSaveState ss (g);
-            // 缩放后再旋转，最后把字形的中心挪到按钮中心。
-            // 这个作用域结束就退出变换 —— 流挂和喷溅必须画在屏幕坐标系里，
-            // 否则会被字体的缩放系数一起缩掉（实测会跑到按钮外面去）。
-            g.addTransform (juce::AffineTransform::scale (fit)
-                                .followedBy (juce::AffineTransform::rotation (tilt, 0.0f, 0.0f))
-                                .translated (cx - fit * tb.getCentreX(),
-                                             cy - fit * tb.getCentreY()));
-
-        // 描边：深色外圈，让 tag 从底色里"抠"出来。
-        // 线宽要除以缩放系数 —— 现在整个坐标系被 scale 过，直接写 1.7 会被一起缩掉。
-        g.setColour (juce::Colour (0xD8000000));
-        g.strokePath (textPath, juce::PathStrokeType (1.8f / juce::jmax (1.0e-3f, fit),
-                        juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-
-        // 填色：开 = 奶白（发光感），关 = 主题强调色
-        if (on)
-        {
-            g.setGradientFill (juce::ColourGradient (
-                juce::Colour (0xFFFFFFF6), tb.getX(), tb.getY(),
-                juce::Colour (0xFFFFE9A8), tb.getX(), tb.getBottom(), false));
-        }
-        else
-        {
-            g.setGradientFill (juce::ColourGradient (
-                OzoCol::accent,  tb.getX(), tb.getY(),
-                OzoCol::accent2, tb.getX(), tb.getBottom(), false));
-        }
-            g.fillPath (textPath);
-        }
-
-        // --- 流挂：字底挂下来的三滴（屏幕坐标系） ---
-        drawDrips (g, textBox, on);
-
-        // --- 喷溅 ---
-        drawSpray (g, area, textBox, on);
+        drawSpray (g, area, on);
     }
 
 private:
-    // 喷漆往下淌的那一滴。x 位置固定（手写感需要确定性，不能每次重绘都变），
-    // 长度用固定种子的小随机。
-    void drawDrips (juce::Graphics& g, const juce::Rectangle<float>& tb, bool on)
+    //--------------------------------------------------------------------------
+    // 关：一颗五角星，中心一颗十字高光。轮廓粗、填色满，小尺寸上也认得出。
+    void drawStar (juce::Graphics& g, juce::Rectangle<float> box)
     {
-        juce::Random rnd (0xD8179);
-        const float w = 2.3f;
+        const auto c = box.getCentre();
+        const float R = juce::jmin (box.getWidth(), box.getHeight()) * 0.50f;
+        const float r = R * 0.40f;
 
-        for (int i = 0; i < 3; ++i)
+        juce::Path star;
+        for (int i = 0; i < 5; ++i)
         {
-            const float x = tb.getX() + tb.getWidth() * (0.16f + 0.30f * (float) i)
-                          + rnd.nextFloat() * 3.0f - 1.5f;
-            const float len = 3.0f + rnd.nextFloat() * (on ? 7.0f : 3.5f);
-            const float y0  = tb.getBottom() - 1.0f;
+            const float a = -juce::MathConstants<float>::halfPi + (float) i * 1.256637f;
+            const float x = c.x + std::cos (a) * R;
+            const float y = c.y + std::sin (a) * R;
+            if (i == 0) star.startNewSubPath (x, y); else star.lineTo (x, y);
 
-            g.setColour ((on ? juce::Colour (0xFFFDF3C8) : OzoCol::accent)
-                            .withAlpha (on ? 0.85f : 0.45f));
-            g.fillRoundedRectangle (x, y0, w, len, w * 0.5f);          // 流下的细条
-            g.fillEllipse (x - 0.7f, y0 + len - 1.6f, w + 1.4f, w + 1.4f); // 末端那滴
+            const float b = a + 0.628319f;
+            star.lineTo (c.x + std::cos (b) * r, c.y + std::sin (b) * r);
+        }
+        star.closeSubPath();
+
+        g.setColour (juce::Colour (0xD8000000));
+        g.strokePath (star, juce::PathStrokeType (4.5f, juce::PathStrokeType::curved,
+                                                  juce::PathStrokeType::rounded));
+        g.setGradientFill (juce::ColourGradient (OzoCol::accent,  c.x, c.y - R,
+                                                 OzoCol::accent2, c.x, c.y + R, false));
+        g.fillPath (star);
+
+        // 中心高光
+        g.setColour (juce::Colours::white.withAlpha (0.9f));
+        g.drawLine (c.x - R * 0.16f, c.y, c.x + R * 0.16f, c.y, 1.6f);
+        g.drawLine (c.x, c.y - R * 0.16f, c.x, c.y + R * 0.16f, 1.6f);
+    }
+
+    //--------------------------------------------------------------------------
+    // 开：一只几乎占满按钮的眼睛。杏仁眼白、渐变虹膜、瞳孔、两颗高光，
+    // 眼睛上方三道闪电。
+    void drawEyeOpen (juce::Graphics& g, juce::Rectangle<float> box)
+    {
+        const auto c = box.getCentre();
+        const float rx = box.getWidth()  * 0.46f;
+        const float ry = box.getHeight() * 0.34f;
+
+        juce::Path eye;
+        eye.addCentredArc (c.x, c.y, rx, ry, 0.0f,
+                           0.10f, juce::MathConstants<float>::pi - 0.10f, true);
+        eye.addCentredArc (c.x, c.y, rx, ry, 0.0f,
+                           juce::MathConstants<float>::pi + 0.10f,
+                           juce::MathConstants<float>::twoPi - 0.10f, false);
+        eye.closeSubPath();
+
+        g.setColour (juce::Colour (0xFFFDFCFA));
+        g.fillPath (eye);
+        g.setColour (juce::Colour (0xD8000000));
+        g.strokePath (eye, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved,
+                                                 juce::PathStrokeType::rounded));
+
+        const float ir = ry * 0.72f;
+        juce::ColourGradient iris (OzoCol::tint[2], c.x - ir * 0.3f, c.y - ir * 0.3f,
+                                   OzoCol::tint[0], c.x + ir, c.y + ir, true);
+        g.setGradientFill (iris);
+        g.fillEllipse (c.x - ir, c.y - ir, ir * 2.0f, ir * 2.0f);
+
+        const float pr = ir * 0.48f;
+        g.setColour (juce::Colour (0xFF14080E));
+        g.fillEllipse (c.x - pr, c.y - pr * 0.9f, pr * 2.0f, pr * 2.0f);
+
+        g.setColour (juce::Colours::white.withAlpha (0.95f));
+        g.fillEllipse (c.x - pr * 0.72f, c.y - pr * 1.05f, pr * 0.62f, pr * 0.62f);
+        g.setColour (juce::Colours::white.withAlpha (0.6f));
+        g.fillEllipse (c.x + pr * 0.30f, c.y + pr * 0.05f, pr * 0.28f, pr * 0.28f);
+
+        drawBolts (g, box);
+        drawDrips (g, box);
+    }
+
+        // 眼睛上方的三道闪电。锯齿路径，固定形状，不随机。
+    void drawBolts (juce::Graphics& g, juce::Rectangle<float> box)
+    {
+        const float top = box.getY() - box.getHeight() * 0.06f;
+        const float xs[3] = { box.getX() + box.getWidth() * 0.22f,
+                              box.getCentreX(),
+                              box.getRight() - box.getWidth() * 0.22f };
+        const float h = box.getHeight() * 0.30f;
+
+        g.setColour (juce::Colour (0xFFFDF3C8).withAlpha (0.95f));
+        for (float x : xs)
+        {
+            juce::Path bolt;
+            bolt.startNewSubPath (x,            top - h);
+            bolt.lineTo          (x - h * 0.34f, top - h * 0.46f);
+            bolt.lineTo          (x + h * 0.10f, top - h * 0.46f);
+            bolt.lineTo          (x - h * 0.16f, top);
+            g.strokePath (bolt, juce::PathStrokeType (1.7f, juce::PathStrokeType::mitered,
+                                                      juce::PathStrokeType::butt));
         }
     }
 
-    // 罐子喷出来的飞溅。固定种子 —— 每帧重画必须长得一样，否则会像噪点在闪。
-    void drawSpray (juce::Graphics& g, const juce::Rectangle<float>& area,
-                    const juce::Rectangle<float>& tb, bool on)
+    // 眼角流下来的两滴喷漆
+    void drawDrips (juce::Graphics& g, juce::Rectangle<float> box)
+    {
+        g.setColour (juce::Colour (0xFFFDF3C8).withAlpha (0.85f));
+        const float xs[2] = { box.getX() + box.getWidth() * 0.30f,
+                              box.getX() + box.getWidth() * 0.66f };
+        for (int i = 0; i < 2; ++i)
+        {
+            const float len = box.getHeight() * (i == 0 ? 0.34f : 0.22f);
+            const float y0  = box.getBottom() - box.getHeight() * 0.18f;
+            g.fillRoundedRectangle (xs[i], y0, 2.2f, len, 1.1f);
+            g.fillEllipse (xs[i] - 1.1f, y0 + len - 1.5f, 4.4f, 4.8f);
+        }
+    }
+
+    // 喷溅：固定种子，每帧一样，否则会像噪点闪
+    void drawSpray (juce::Graphics& g, juce::Rectangle<float> area, bool on)
     {
         juce::Random rnd (0x5FFA11);
-        const int n = on ? 26 : 14;
+        const int n = on ? 22 : 10;
 
         for (int i = 0; i < n; ++i)
         {
-            float x, y;
-            // 一半撒在字周围，一半撒在整个按钮里
-            if (i % 2 == 0)
-            {
-                x = tb.expanded (5.0f).getX() + rnd.nextFloat() * tb.expanded (5.0f).getWidth();
-                y = tb.expanded (5.0f).getY() + rnd.nextFloat() * tb.expanded (5.0f).getHeight();
-            }
-            else
-            {
-                x = area.getX() + rnd.nextFloat() * area.getWidth();
-                y = area.getY() + rnd.nextFloat() * area.getHeight();
-            }
-
-            const float rad = 0.45f + rnd.nextFloat() * 0.85f;
+            const float x = area.getX() + rnd.nextFloat() * area.getWidth();
+            const float y = area.getY() + rnd.nextFloat() * area.getHeight();
+            const float rad = 0.4f + rnd.nextFloat() * 0.8f;
             g.setColour ((on ? juce::Colour (0xFFFFF3D0) : OzoCol::textDim)
-                            .withAlpha ((on ? 0.30f : 0.22f) * (0.4f + rnd.nextFloat() * 0.6f)));
+                            .withAlpha ((on ? 0.34f : 0.20f) * (0.4f + rnd.nextFloat() * 0.6f)));
             g.fillEllipse (x - rad, y - rad, rad * 2.0f, rad * 2.0f);
         }
     }
@@ -209,4 +220,4 @@ private:
     float flicker = 0.0f;
 };
 
-}
+} // namespace ozo

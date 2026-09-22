@@ -90,7 +90,7 @@ EZampEditor::EZampEditor (EZampProcessor& p)
     // 它不是"多一个效果旋钮"：打开后 DSP 换算法（波形折叠 + 次八度）、
     // 各级参数加倍，界面整套转成炽热暗色。所以点击之后要刷新整个主题。
     // ---------------------------------------------------------------------
-    // 字形是画出来的（Graffiti 字体），不走 setButtonText —— juce::Button 没有这个方法
+    // 按钮上是两张手绘涂鸦（闭眼 / 睁眼），不走文字
     wildAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
         processor.getAPVTS(), ParamID::wild, wildButton);
 
@@ -244,7 +244,7 @@ void EZampEditor::resized()
     // WILD 比另外两个大一号：它是模式开关，不是小选项
     // WILD 比另外两个大一号：它是模式开关，不是小选项。
     // 涂鸦字形比普通字体占地方，所以再放宽一点，否则描边会被切掉。
-    wildButton.setBounds  (getWidth() - 330, 16, 112, 30);
+    wildButton.setBounds  (getWidth() - 360, 12, 150, 46);
     matchButton.setBounds (getWidth() - 210, 20, 96, 22);
     hqButton.setBounds    (getWidth() - 104, 20, 80, 22);
 }

@@ -54,6 +54,34 @@ public:
     // setWeights 判定为"没变化"不会 rebuild，LUT 会一直停在旧配色上。
     void refresh() { rebuild(); }
 
+    // 按当前权重抽一个颜色。返回值是颜色轴上的位置 0..1，
+    // 旋钮开得越大，抽中它那一色的概率越高。u 是 0..1 的均匀随机数。
+    float samplePos (float u) const noexcept
+    {
+        float w[kNumTints], total = 0.0f;
+        for (int i = 0; i < kNumTints; ++i)
+        {
+            w[i] = kFloor + weights[(size_t) i];
+            total += w[i];
+        }
+
+        float acc = 0.0f;
+        for (int i = 0; i < kNumTints; ++i)
+        {
+            acc += w[i] / total;
+            if (u <= acc)
+                return ((float) i + 0.5f) / (float) kNumTints;
+        }
+        return 1.0f;
+    }
+
+    // 某个颜色轴位置对应的旋钮开度 0..1。粒子用它决定自己飘多快。
+    float weightAt (float pos) const noexcept
+    {
+        const int i = juce::jlimit (0, kNumTints - 1, (int) (pos * (float) kNumTints));
+        return weights[(size_t) i];
+    }
+
     // pos: 0..1，返回该位置的颜色
     juce::Colour at (float pos) const noexcept
     {
