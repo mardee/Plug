@@ -43,6 +43,9 @@ jobs:
         run: |
           git clone --branch 9.0.2 --depth 1 https://github.com/juce-framework/JUCE.git JUCE
 
+      # -------------------------------------------------------------
+      # Windows 环境准备与配置
+      # -------------------------------------------------------------
       - name: Setup MSVC developer environment (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -50,13 +53,19 @@ jobs:
       - name: Configure CMake (Windows)
         if: runner.os == 'Windows'
         run: |
-          cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release
 
+      # -------------------------------------------------------------
+      # macOS 配置
+      # -------------------------------------------------------------
       - name: Configure CMake (macOS)
         if: runner.os == 'macOS'
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 
+      # -------------------------------------------------------------
+      # 编译
+      # -------------------------------------------------------------
       - name: Build ozoPRISM
         run: |
           cmake --build build --config Release --target ozoPRISM --parallel
@@ -70,13 +79,9 @@ jobs:
         run: |
           mkdir -p dist/Windows
           # 拷贝 VST3
-          if [ -d "build/ozoPRISM_artefacts/Release/VST3" ]; then
-            cp -r "build/ozoPRISM_artefacts/Release/VST3" dist/Windows/
-          fi
-          # 拷贝 Standalone
-          if [ -d "build/ozoPRISM_artefacts/Release/Standalone" ]; then
-            cp -r "build/ozoPRISM_artefacts/Release/Standalone" dist/Windows/
-          fi
+          find build -type d -name "ozo PRISM.vst3" -exec cp -r {} dist/Windows/ \; 2>/dev/null || true
+          # 拷贝 Standalone exe
+          find build -type f -name "ozo PRISM.exe" -exec cp {} dist/Windows/ \; 2>/dev/null || true
           # 拷贝说明文件
           if [ -f "INSTALL.txt" ]; then
             cp "INSTALL.txt" dist/Windows/
@@ -94,17 +99,11 @@ jobs:
         run: |
           mkdir -p dist/macOS
           # 拷贝 AU
-          if [ -d "build/ozoPRISM_artefacts/Release/AU" ]; then
-            cp -r "build/ozoPRISM_artefacts/Release/AU" dist/macOS/
-          fi
+          find build -type d -name "ozo PRISM.component" -exec cp -r {} dist/macOS/ \; 2>/dev/null || true
           # 拷贝 VST3
-          if [ -d "build/ozoPRISM_artefacts/Release/VST3" ]; then
-            cp -r "build/ozoPRISM_artefacts/Release/VST3" dist/macOS/
-          fi
-          # 拷贝 Standalone
-          if [ -d "build/ozoPRISM_artefacts/Release/Standalone" ]; then
-            cp -r "build/ozoPRISM_artefacts/Release/Standalone" dist/macOS/
-          fi
+          find build -type d -name "ozo PRISM.vst3" -exec cp -r {} dist/macOS/ \; 2>/dev/null || true
+          # 拷贝 Standalone app
+          find build -type d -name "ozo PRISM.app" -exec cp -r {} dist/macOS/ \; 2>/dev/null || true
           # 拷贝说明文件
           if [ -f "INSTALL.txt" ]; then
             cp "INSTALL.txt" dist/macOS/
@@ -114,7 +113,7 @@ jobs:
           zip -r -y ../../${{ matrix.artifact_name }}.zip ./*
 
       # -------------------------------------------------------------
-      # 上传 GitHub Actions 构建产物 (在 Actions 页面直接下载)
+      # 上传 GitHub Actions 构建产物
       # -------------------------------------------------------------
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
