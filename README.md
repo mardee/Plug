@@ -1,4 +1,6 @@
-# ozo EZamp
+# ozo PRISM
+
+> Windows 快速包、双平台发布和最新构建命令见 [构建与打包指南](docs/BUILDING.md)。下方保留早期设计记录，其中压缩器、Glue 和旧预设描述不代表当前版本。
 
 录音棚染色插件。品牌 **ozo**。
 
@@ -41,34 +43,23 @@ Input ──▶ Preamp ──▶ Tape ──▶ Tone ──▶ Comp ──▶ Ou
 
 ## 构建
 
-需要 JUCE（仓库内 `./JUCE/`，当前为 JUCE 9）。
+需要 JUCE 9.0.2（仓库内 `./JUCE/`）。只构建 VST3：
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DPRISM_BUILD_SNAPSHOT=OFF
+cmake --build build --config Release --target ozoPRISM_VST3 --parallel
 ```
 
-产物在 `build/ozoEZamp_artefacts/Release/`，含 VST3 / AU / Standalone。
-
-安装：
-
-```bash
-cp -R "build/ozoEZamp_artefacts/Release/VST3/ozo EZamp.vst3" ~/Library/Audio/Plug-Ins/VST3/
-cp -R "build/ozoEZamp_artefacts/Release/AU/ozo EZamp.component" ~/Library/Audio/Plug-Ins/Components/
-```
+产物在 `build/ozoPRISM_artefacts/Release/VST3/ozo PRISM.vst3`。完整包、Windows 工具链及安装路径见 [构建与打包指南](docs/BUILDING.md)。
 
 ## 验证
 
-离线 DSP 回归，直接驱动 SignalChain，不依赖宿主：
+离线 DSP 回归和端到端 VST3 加载（使用本次构建的插件，不依赖已安装版本）：
 
 ```bash
-./build/ozoEZampTests_artefacts/Release/ozoEZampTests
-```
-
-端到端加载已安装的 VST3（确认插件真的在处理、音量真的对齐）：
-
-```bash
-./build/ozoEZampVST3Host_artefacts/Release/ozoEZampVST3Host
+cmake -S . -B build -DBUILD_TESTING=ON -DPRISM_BUILD_SNAPSHOT=OFF
+cmake --build build --config Release --target ozoPRISM_VST3 ozoPRISMTests ozoPRISMVST3Host --parallel
+ctest --test-dir build -C Release --output-on-failure --no-tests=error
 ```
 
 ### 为什么有这些测试

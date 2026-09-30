@@ -4,7 +4,9 @@
 
 感谢使用 ozo PRISM 音频插件！
 本插件支持 VST3、AU (仅 macOS) 和 Standalone 独立应用程序。
+快速包（文件名含 -vst3）仅包含 VST3；完整包（-full）包含该平台的所有格式。
 请根据您的操作系统（Windows / macOS）按照以下步骤进行安装。
+BUILD-INFO.txt 记录本包对应的源码版本，ZIP 旁的 .sha256 文件用于完整性校验。
 
 ----------------------------------------------------------------------
 一、 macOS 安装指南
@@ -55,11 +57,11 @@
 2. 安装路径：
 
    【VST3 格式】
-   请将 `ozo PRISM.vst3`（或包含该文件的文件夹）复制到以下 Windows 标准 VST3 目录：
+   请将整个 `ozo PRISM.vst3` 文件夹复制到以下 Windows 标准 VST3 目录：
    C:\Program Files\Common Files\VST3\
+   不要只复制其中的二进制文件，必须保留 Contents 等内部目录。
 
-   * 注意：如果您的系统或宿主设置为 32 位（较少见），请放置在：
-     C:\Program Files (x86)\Common Files\VST3\
+   * 本包为 Windows x64，仅支持 64 位宿主；不提供 32 位版本。
 
    【独立运行版】
    将 `ozo PRISM.exe` 放置在任意常用目录（如桌面或安装目录），双击即可运行。

@@ -55,76 +55,88 @@ target_link_libraries(ozoPRISM PRIVATE
     ozoPRISMFonts
 )
 
-# -----------------------------------------------------------------------------
-# 离线 DSP 验证：直接跑 SignalChain，不依赖插件宿主
-# -----------------------------------------------------------------------------
-juce_add_console_app(ozoPRISMTests
-    PRODUCT_NAME "ozoPRISMTests"
-)
+include(CTest)
+option(PRISM_BUILD_SNAPSHOT "Build the offline UI snapshot tool" ON)
 
-target_sources(ozoPRISMTests PRIVATE
-    tests/dsp_tests.cpp
-    src/dsp/SignalChain.cpp
-)
+if(BUILD_TESTING)
+    # -----------------------------------------------------------------------------
+    # 离线 DSP 验证：直接跑 SignalChain，不依赖插件宿主
+    # -----------------------------------------------------------------------------
+    juce_add_console_app(ozoPRISMTests
+        PRODUCT_NAME "ozoPRISMTests"
+    )
 
-target_include_directories(ozoPRISMTests PRIVATE src)
+    target_sources(ozoPRISMTests PRIVATE
+        tests/dsp_tests.cpp
+        src/dsp/SignalChain.cpp
+    )
 
-target_link_libraries(ozoPRISMTests PRIVATE
-    juce::juce_audio_basics
-    juce::juce_core
-    juce::juce_dsp
-)
+    target_include_directories(ozoPRISMTests PRIVATE src)
 
-# -----------------------------------------------------------------------------
-# VST3 宿主诊断：加载已安装的 .vst3，跑一段音频，确认插件真的在处理
-# -----------------------------------------------------------------------------
-juce_add_console_app(ozoPRISMVST3Host
-    PRODUCT_NAME "ozoPRISMVST3Host"
-)
+    target_link_libraries(ozoPRISMTests PRIVATE
+        juce::juce_audio_basics
+        juce::juce_core
+        juce::juce_dsp
+    )
 
-target_sources(ozoPRISMVST3Host PRIVATE
-    tests/vst3_host_test.cpp
-)
+    # -----------------------------------------------------------------------------
+    # VST3 宿主诊断：加载已安装的 .vst3，跑一段音频，确认插件真的在处理
+    # -----------------------------------------------------------------------------
+    juce_add_console_app(ozoPRISMVST3Host
+        PRODUCT_NAME "ozoPRISMVST3Host"
+    )
 
-target_link_libraries(ozoPRISMVST3Host PRIVATE
-    juce::juce_audio_basics
-    juce::juce_audio_formats
-    juce::juce_core
-    juce::juce_audio_processors_headless
-)
+    target_sources(ozoPRISMVST3Host PRIVATE
+        tests/vst3_host_test.cpp
+    )
 
-target_compile_definitions(ozoPRISMVST3Host PRIVATE
-    JUCE_PLUGINHOST_VST3=1
-)
+    target_link_libraries(ozoPRISMVST3Host PRIVATE
+        juce::juce_audio_basics
+        juce::juce_audio_formats
+        juce::juce_core
+        juce::juce_audio_processors_headless
+    )
 
-# -----------------------------------------------------------------------------
-# 离线 UI 渲染截图工具
-# -----------------------------------------------------------------------------
-juce_add_console_app(ozoPRISMSnapshot
-    PRODUCT_NAME "ozoPRISMSnapshot"
-)
+    target_compile_definitions(ozoPRISMVST3Host PRIVATE
+        JUCE_PLUGINHOST_VST3=1
+    )
 
-target_sources(ozoPRISMSnapshot PRIVATE
-    tests/render_snapshots.cpp
-    src/PluginProcessor.cpp
-    src/PluginEditor.cpp
-    src/dsp/SignalChain.cpp
-    src/presets/PresetFactory.cpp
-    src/presets/UserPresets.cpp
-)
+    add_test(NAME prism.dsp COMMAND ozoPRISMTests)
+    add_test(NAME prism.vst3-load COMMAND ozoPRISMVST3Host
+        "$<TARGET_GENEX_EVAL:ozoPRISM_VST3,$<TARGET_PROPERTY:ozoPRISM_VST3,JUCE_PLUGIN_ARTEFACT_FILE>>")
+    set_tests_properties(prism.dsp prism.vst3-load PROPERTIES TIMEOUT 120)
+endif()
 
-target_include_directories(ozoPRISMSnapshot PRIVATE src)
+if(PRISM_BUILD_SNAPSHOT)
+    # -----------------------------------------------------------------------------
+    # 离线 UI 渲染截图工具
+    # -----------------------------------------------------------------------------
+    juce_add_console_app(ozoPRISMSnapshot
+        PRODUCT_NAME "ozoPRISMSnapshot"
+    )
 
-target_compile_definitions(ozoPRISMSnapshot PRIVATE
-    JUCE_IGNORE_VST3_MISMATCHED_PARAMETER_ID_WARNING=1
-    JUCE_WEB_BROWSER=0
-    JUCE_USE_CURL=0
-)
+    target_sources(ozoPRISMSnapshot PRIVATE
+        tests/render_snapshots.cpp
+        src/PluginProcessor.cpp
+        src/PluginEditor.cpp
+        src/dsp/SignalChain.cpp
+        src/presets/PresetFactory.cpp
+        src/presets/UserPresets.cpp
+    )
 
-target_link_libraries(ozoPRISMSnapshot PRIVATE
-    juce::juce_audio_utils
-    juce::juce_audio_processors
-    juce::juce_dsp
-    juce::juce_gui_basics
-    ozoPRISMFonts
-)
+    target_include_directories(ozoPRISMSnapshot PRIVATE src)
+
+    target_compile_definitions(ozoPRISMSnapshot PRIVATE
+        JUCE_IGNORE_VST3_MISMATCHED_PARAMETER_ID_WARNING=1
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+    )
+
+    target_link_libraries(ozoPRISMSnapshot PRIVATE
+        juce::juce_audio_utils
+        juce::juce_audio_processors
+        juce::juce_dsp
+        juce::juce_gui_basics
+        ozoPRISMFonts
+    )
+endif()

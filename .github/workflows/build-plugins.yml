@@ -1,4 +1,4 @@
-name: Build Plugins (Windows & macOS)
+name: Build PRISM
 
 on:
   push:
@@ -8,148 +8,175 @@ on:
       - 'feat/**'
     tags:
       - 'v*'
+    paths:
+      - '.github/workflows/build-plugins.yml'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'src/**'
+      - 'assets/**'
+      - 'resources/**'
+      - 'CMakeLists.txt'
+      - 'INSTALL.txt'
   workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Build platform'
+        type: choice
+        default: windows
+        options:
+          - windows
+          - macos
+          - both
+      package:
+        description: 'vst3 = quick test package; full = all formats + audio tests'
+        type: choice
+        default: vst3
+        options:
+          - vst3
+          - full
+
+permissions:
+  contents: read
+
+# Do not cancel a full build when a quick build is requested, or cancel a release.
+concurrency:
+  group: prism-${{ github.ref }}-${{ github.event_name }}-${{ inputs.platform || 'auto' }}-${{ inputs.package || 'auto' }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  JUCE_VERSION: '9.0.2'
 
 jobs:
+  plan:
+    name: Select build and check packaging
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test build selection and packaging
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Select platforms and JUCE wrapper targets
+        id: select
+        env:
+          INPUT_PLATFORM: ${{ inputs.platform }}
+          INPUT_PACKAGE: ${{ inputs.package }}
+        run: python3 scripts/ci_plan.py
+
   build:
-    name: Build on ${{ matrix.name }}
+    name: ${{ matrix.artifact }}
+    needs: plan
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: "Windows (x64)"
-            os: windows-latest
-            artifact_name: "ozoPRISM-Windows-x64"
-
-          - name: "macOS (Universal)"
-            os: macos-latest
-            artifact_name: "ozoPRISM-macOS-Universal"
-
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      SCCACHE_GHA_ENABLED: 'true'
+      SCCACHE_GHA_VERSION: prism-${{ matrix.os }}-juce9-v1
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test packaging on this platform
+        run: python -B -m unittest discover -s tests -p 'test_package_plugins.py' -v
+      - name: Set build parallelism
+        run: |
+          python -c 'import os; print("CMAKE_BUILD_PARALLEL_LEVEL=" + str(os.cpu_count() or 2))' >> "$GITHUB_ENV"
 
-      - name: Cache JUCE
-        id: cache-juce
+      - name: Restore JUCE source
+        id: juce
         uses: actions/cache@v4
         with:
           path: JUCE
-          key: juce-9.0.2-${{ runner.os }}
+          key: juce-source-${{ env.JUCE_VERSION }}-${{ runner.os }}
+      - name: Download JUCE
+        if: steps.juce.outputs.cache-hit != 'true'
+        run: git clone --branch "$JUCE_VERSION" --depth 1 https://github.com/juce-framework/JUCE.git JUCE
 
-      - name: Clone JUCE 9.0.2
-        if: steps.cache-juce.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          git clone --branch 9.0.2 --depth 1 https://github.com/juce-framework/JUCE.git JUCE
-
-      # -------------------------------------------------------------
-      # Windows 环境准备与配置
-      # -------------------------------------------------------------
-      - name: Setup MSVC developer environment (Windows)
+      - name: Set up MSVC x64
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Set up Windows compiler cache
+        if: runner.os == 'Windows'
+        id: sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
-      - name: Configure CMake (Windows)
+      - name: Configure Windows
         if: runner.os == 'Windows'
         run: |
-          cmake -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release
-
-      # -------------------------------------------------------------
-      # macOS 配置 (Universal Binary: arm64 + x86_64)
-      # -------------------------------------------------------------
-      - name: Configure CMake (macOS)
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            -DBUILD_TESTING=${{ matrix.tests }} \
+            -DPRISM_BUILD_SNAPSHOT=OFF
+      - name: Configure macOS Universal
         if: runner.os == 'macOS'
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64' \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DBUILD_TESTING=${{ matrix.tests }} \
+            -DPRISM_BUILD_SNAPSHOT=OFF
 
-      # -------------------------------------------------------------
-      # 编译
-      # -------------------------------------------------------------
-      - name: Build ozoPRISM
+      - name: Build plugin binaries
+        env:
+          BUILD_TARGETS: ${{ matrix.targets }}
         run: |
-          cmake --build build --config Release --target ozoPRISM --parallel
-
-      # -------------------------------------------------------------
-      # 打包 Windows 产物 (VST3 & Standalone exe)
-      # -------------------------------------------------------------
-      - name: Package Windows Artifacts
-        if: runner.os == 'Windows'
-        shell: bash
+          read -ra targets <<< "$BUILD_TARGETS"
+          cmake --build build --config Release --target "${targets[@]}" --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+      - name: Run audio regression and VST3 load tests
+        if: matrix.package == 'full'
+        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error
+      - name: Package and verify binaries
+        env:
+          PACKAGE_PLATFORM: ${{ matrix.platform }}
+          PACKAGE_KIND: ${{ matrix.package }}
         run: |
-          mkdir -p dist/Windows
-          
-          echo "=== Searching for build outputs ==="
-          find build -name "*PRISM*.vst3" -o -name "*PRISM*.exe"
-
-          # 拷贝 VST3 Bundle
-          find build -type d -name "*PRISM*.vst3" -exec cp -r {} dist/Windows/ \;
-          # 拷贝 Standalone .exe
-          find build -type f -name "*PRISM*.exe" -exec cp {} dist/Windows/ \;
-          # 拷贝说明文档
-          if [ -f "INSTALL.txt" ]; then
-            cp "INSTALL.txt" dist/Windows/
-          fi
-          
-          echo "=== Contents in dist/Windows ==="
-          ls -la dist/Windows/
-          
-          cd dist/Windows
-          7z a -tzip ../../${{ matrix.artifact_name }}.zip ./*
-
-      # -------------------------------------------------------------
-      # 打包 macOS 产物 (AU, VST3, Standalone app) 并进行 ad-hoc 签名
-      # -------------------------------------------------------------
-      - name: Package macOS Artifacts
-        if: runner.os == 'macOS'
-        shell: bash
+          python scripts/package_plugins.py \
+            --platform "$PACKAGE_PLATFORM" --package "$PACKAGE_KIND" \
+            --build-dir build --output-dir dist --commit "$GITHUB_SHA"
+      - name: Report compiler cache
+        if: always() && steps.sccache.outcome == 'success'
         run: |
-          mkdir -p dist/macOS
-          
-          echo "=== Searching for macOS build outputs ==="
-          find build -name "*PRISM*.component" -o -name "*PRISM*.vst3" -o -name "*PRISM*.app"
-
-          # 拷贝 AU
-          find build -type d -name "*PRISM*.component" -exec cp -R {} dist/macOS/ \;
-          # 拷贝 VST3
-          find build -type d -name "*PRISM*.vst3" -exec cp -R {} dist/macOS/ \;
-          # 拷贝 Standalone app
-          find build -type d -name "*PRISM*.app" -exec cp -R {} dist/macOS/ \;
-          # 拷贝说明文档
-          if [ -f "INSTALL.txt" ]; then
-            cp "INSTALL.txt" dist/macOS/
-          fi
-
-          # 对所有 bundle 执行本地签名，防止损坏误报
-          echo "=== Signing macOS bundles ==="
-          find dist/macOS -type d -name "*.app" -o -name "*.component" -o -name "*.vst3" | while read -r bundle; do
-            echo "Signing $bundle"
-            codesign --force --deep --sign - "$bundle" || true
-          done
-
-          echo "=== Contents in dist/macOS ==="
-          ls -la dist/macOS/
-
-          cd dist/macOS
-          zip -r -y ../../${{ matrix.artifact_name }}.zip ./*
-
-      # -------------------------------------------------------------
-      # 上传 GitHub Actions 构建产物
-      # -------------------------------------------------------------
-      - name: Upload Artifact
+          sccache --show-stats
+          sccache --show-stats >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload installable package
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_name }}.zip
-          retention-days: 30
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/${{ matrix.artifact }}.zip
+            dist/${{ matrix.artifact }}.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
-      # -------------------------------------------------------------
-      # 若打了 release tag (如 v1.1.0)，自动发布到 GitHub Release
-      # -------------------------------------------------------------
-      - name: Upload to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+  release:
+    name: Publish release packages
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ozoPRISM-*-full
+          merge-multiple: true
+          path: dist
+      - name: Publish verified Windows and macOS packages
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.artifact_name }}.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: |
+            dist/*.zip
+            dist/*.zip.sha256
+          fail_on_unmatched_files: true

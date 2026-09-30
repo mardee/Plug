@@ -6,7 +6,7 @@
 // 注意：块长要用 prepareToPlay 声明的值。真实宿主不会一次塞进更大的 buffer，
 // 而 JUCE 的 VST3 wrapper 对超大块另有假设，所以这里按规范来。
 //
-// 用法：./ozoEZampVST3Host [可选：vst3 路径]
+// 用法：./ozoPRISMVST3Host [可选：vst3 路径]
 
 #include <cmath>
 #include <iostream>
@@ -128,10 +128,13 @@ int main (int argc, char* argv[])
     std::cout << "ΔRMS     = " << (dbOut - dbDry) << " dB" << std::endl;
     std::cout << std::endl;
 
-    if (std::abs (dbOut - dbDry) < 0.5)
+    const bool matched = std::isfinite (dbDry) && std::isfinite (dbOut)
+                      && std::abs (dbOut - dbDry) < 0.5;
+    if (matched)
         std::cout << "结论：插件在处理音频，且 Auto Match 已把音量对齐（|Δ| < 0.5 dB）" << std::endl;
     else
-        std::cout << "结论：插件在处理音频，但音量尚未对齐 —— 检查 Auto Match 是否开启" << std::endl;
+        std::cout << "FAILED: output is invalid or Auto Match differs by at least 0.5 dB" << std::endl;
 
-    return 0;
+    instance->releaseResources();
+    return matched ? 0 : 1;
 }
