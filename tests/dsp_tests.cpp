@@ -3,7 +3,7 @@
 // 这四项是上一版死掉的地方，所以它们是必须每次都跑的回归测试：
 //   A. 偶次谐波必须真实存在（决定"温暖"还是"刺耳"）
 //   B. bypass 音量跳变必须收在 ±0.5 dB 内（决定 A/B 能不能听）
-//   C. 压缩器必须真的动作（上一版增益衰减恒为 0）
+//   C. Auto Match 关闭时，强声道不能压低弱声道（含释放历史）
 //   D. 高频输入不能凭空长出低频分量（混叠）
 //
 // 用法：构建 ozoEZampTests 后直接运行。
@@ -84,7 +84,6 @@ namespace
         p.character = ozo::Character::Tape;
         p.weight    = 0.38f;
         p.air       = 0.42f;
-        p.glue      = 0.30f;
         p.outputDb  = 0.0f;
         p.mix       = 1.0f;
         p.autoMatch = true;
@@ -220,61 +219,97 @@ static void testLoudnessNeutrality()
 }
 
 //==============================================================================
-// C. 压缩器必须真的动作
+// C. 无立体声联动压缩：另一声道的强信号不能改变弱声道
 //==============================================================================
-static void testCompressorWorks()
+static void testNoLinkedCompression()
 {
-    std::cout << "\nC. 压缩器增益衰减\n";
+    std::cout << "\nC. No linked compression (Auto Match off)\n";
 
-    for (float glue : { 0.0f, 0.3f, 0.6f, 1.0f })
-    {
-        ozo::SignalChain chain;
-        chain.prepare (SR, 512, 1);
+    struct Case { const char* name; ozo::Character character; };
+    const Case cases[] = { { "Tape", ozo::Character::Tape },
+                           { "Tube", ozo::Character::Tube },
+                           { "Console", ozo::Character::Console } };
+    constexpr int blockSize = 512;
+    constexpr int burstStart = 32;
+    constexpr int burstEnd = 80;
+    constexpr int totalBlocks = 144;
+    constexpr float tolerance = 1.0e-6f;
 
-        auto p = guitarPreset();
-        p.glue = glue;
-        p.autoMatch = false;
-        chain.setParams (p);
+    for (const auto& c : cases)
+        for (bool hq : { false, true })
+            for (int quietChannel : { 0, 1 })
+            {
+                ozo::SignalChain mono, control, driven;
+                mono.prepare (SR, blockSize, 1);
+                control.prepare (SR, blockSize, 2);
+                driven.prepare (SR, blockSize, 2);
 
-        juce::AudioBuffer<float> buf (1, 512);
-        float grMin = 0.0f;
+                auto p = guitarPreset();
+                p.character = c.character;
+                p.hq = hq;
+                p.wild = false; // Exclude the intentionally channel-specific grit RNG.
+                p.autoMatch = false; // Auto Match intentionally uses stereo loudness.
+                mono.setParams (p);
+                control.setParams (p);
+                driven.setParams (p);
 
-        // 跑 1 秒 -6 dBFS 正弦，取后段稳定值
-        for (int b = 0; b < 100; ++b)
-        {
-            fillSine (buf, 440.0, 0.5f);
-            chain.process (buf);
-            if (b > 50)
-                grMin = std::min (grMin, chain.getGainReductionDb());
-        }
+                juce::AudioBuffer<float> monoBuffer (1, blockSize);
+                juce::AudioBuffer<float> controlBuffer (2, blockSize);
+                juce::AudioBuffer<float> drivenBuffer (2, blockSize);
+                float maxDifference[3] = {}; // Before, during, and after the loud burst.
+                float monoDifference = 0.0f;
+                float quietPeak = 0.0f, loudPeak = 0.0f;
+                bool finite = true;
 
-        std::cout << "     glue " << std::setw (4) << (int) (glue * 100.0f)
-                  << "%   →   GR " << std::fixed << std::setprecision (2)
-                  << grMin << " dB\n";
+                for (int b = 0; b < totalBlocks; ++b)
+                {
+                    const int phase = b < burstStart ? 0 : (b < burstEnd ? 1 : 2);
+                    controlBuffer.clear();
+                    drivenBuffer.clear();
+                    for (int i = 0; i < blockSize; ++i)
+                    {
+                        const double t = (b * blockSize + i) / SR;
+                        const float quiet = 0.01f * (float) std::sin (
+                            juce::MathConstants<double>::twoPi * 997.0 * t);
+                        const float loud = phase == 1 ? 0.95f * (float) std::sin (
+                            juce::MathConstants<double>::twoPi * 233.0 * t) : 0.0f;
+                        monoBuffer.setSample (0, i, quiet);
+                        controlBuffer.setSample (quietChannel, i, quiet);
+                        drivenBuffer.setSample (quietChannel, i, quiet);
+                        drivenBuffer.setSample (1 - quietChannel, i, loud);
+                    }
 
-        if (glue >= 0.6f)
-            report (("压缩器在 glue=" + std::to_string ((int) (glue * 100)) + "% 时确实在压").c_str(),
-                    grMin < -1.0f, std::string ("GR = ") + n2 (grMin) + " dB");
-    }
+                    mono.process (monoBuffer);
+                    control.process (controlBuffer);
+                    driven.process (drivenBuffer);
+                    for (int i = 0; i < blockSize; ++i)
+                    {
+                        const float reference = controlBuffer.getSample (quietChannel, i);
+                        const float actual = drivenBuffer.getSample (quietChannel, i);
+                        const float monoSample = monoBuffer.getSample (0, i);
+                        const float other = drivenBuffer.getSample (1 - quietChannel, i);
+                        finite = finite && std::isfinite (reference) && std::isfinite (actual)
+                                        && std::isfinite (monoSample) && std::isfinite (other);
+                        maxDifference[phase] = std::max (maxDifference[phase],
+                                                         std::abs (actual - reference));
+                        monoDifference = std::max (monoDifference, std::abs (reference - monoSample));
+                        quietPeak = std::max (quietPeak, std::abs (reference));
+                        if (phase == 1) loudPeak = std::max (loudPeak, std::abs (other));
+                    }
+                }
 
-    // 上一版在这一项上是 0.00 dB —— 这里必须不是
-    ozo::SignalChain chain;
-    chain.prepare (SR, 512, 1);
-    auto p = guitarPreset();
-    p.autoMatch = false;
-    chain.setParams (p);
-
-    juce::AudioBuffer<float> buf (1, 512);
-    float gr = 0.0f;
-    for (int b = 0; b < 100; ++b)
-    {
-        fillSine (buf, 440.0, 0.5f);
-        chain.process (buf);
-        if (b > 50) gr = std::min (gr, chain.getGainReductionDb());
-    }
-
-    report ("默认预设下压缩器不是摆设（上一版此项为 0.00 dB）",
-            gr < -0.5f, std::string ("GR = ") + n2 (gr) + " dB");
+                const std::string label = std::string (c.name) + (hq ? " HQ" : " normal")
+                                       + (quietChannel == 0 ? " quiet L" : " quiet R");
+                report ((label + " finite, non-silent probes").c_str(),
+                        finite && quietPeak > 1.0e-4f && loudPeak > quietPeak * 5.0f);
+                report ((label + " mono/stereo agreement").c_str(),
+                        finite && monoDifference <= tolerance, "max diff = " + n8 (monoDifference));
+                const char* phases[] = { "before burst", "during burst", "after burst (no release tail)" };
+                for (int phase = 0; phase < 3; ++phase)
+                    report ((label + " independent " + phases[phase]).c_str(),
+                            finite && maxDifference[phase] <= tolerance,
+                            "max diff = " + n8 (maxDifference[phase]));
+            }
 }
 
 //==============================================================================
@@ -341,7 +376,6 @@ static void testNoParamExplosion()
 
     auto p = guitarPreset();
     p.drive = 1.0f;
-    p.glue  = 1.0f;
     chain.setParams (p);
 
     juce::AudioBuffer<float> buf (2, 4096);
@@ -646,7 +680,10 @@ static void testWildMode()
 
     // --- 2. 次八度：100 Hz 进去，50 Hz 必须有东西出来 ---
     {
-        juce::AudioBuffer<float> calm (1, N), wild (1, N);
+        // 分析窗包含整数个 50/100 Hz 周期，避免基频泄漏污染次八度读数。
+        constexpr int subN = 48000;
+        constexpr int subTail = subN / 2;
+        juce::AudioBuffer<float> calm (1, subN), wild (1, subN);
         fillSine (calm, 100.0, 0.30f);
         wild.makeCopyOf (calm);
 
@@ -655,9 +692,9 @@ static void testWildMode()
 
         auto subRelative = [&] (const juce::AudioBuffer<float>& b)
         {
-            const float* s = b.getReadPointer (0) + tail;
-            const float f0  = tone (s, tail, 100.0, SR);
-            const float sub = tone (s, tail,  50.0, SR);
+            const float* s = b.getReadPointer (0) + subTail;
+            const float f0  = tone (s, subTail, 100.0, SR);
+            const float sub = tone (s, subTail,  50.0, SR);
             return 20.0f * std::log10 (sub / (f0 + 1.0e-12f) + 1.0e-12f);
         };
 
@@ -681,7 +718,6 @@ static void testWildMode()
         auto p = guitarPreset();
         p.wild  = true;
         p.drive = 1.0f;
-        p.glue  = 1.0f;
         chain.setParams (p);
 
         juce::AudioBuffer<float> buf (2, 4096);
@@ -916,7 +952,7 @@ int main()
 
     testEvenHarmonics();
     testLoudnessNeutrality();
-    testCompressorWorks();
+    testNoLinkedCompression();
     testAliasing();
     testNoParamExplosion();
     testSpectrum();

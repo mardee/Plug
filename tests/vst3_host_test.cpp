@@ -32,7 +32,7 @@ namespace
 
 int main (int argc, char* argv[])
 {
-    juce::String vst3Path = "/Users/wangxuele/Library/Audio/Plug-Ins/VST3/ozo EZamp.vst3";
+    juce::String vst3Path = "/Users/wangxuele/Library/Audio/Plug-Ins/VST3/ozo PRISM.vst3";
     if (argc > 1)
         vst3Path = argv[1];
 
@@ -70,6 +70,16 @@ int main (int argc, char* argv[])
     std::cout << "Loaded:  " << instance->getName() << std::endl;
     std::cout << "I/O:     " << instance->getTotalNumInputChannels()
               << " in / " << instance->getTotalNumOutputChannels() << " out" << std::endl;
+
+    for (auto* parameter : instance->getParameters())
+    {
+        if (parameter->getName (128).equalsIgnoreCase ("Glue"))
+        {
+            std::cout << "FAILED: retired Glue parameter is still exposed" << std::endl;
+            return 1;
+        }
+    }
+    std::cout << "PASS: no Glue parameter exposed to the host" << std::endl;
 
     instance->prepareToPlay (kSampleRate, kBlock);
     std::cout << "Latency: " << instance->getLatencySamples() << " smp" << std::endl;

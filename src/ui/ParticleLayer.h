@@ -33,6 +33,7 @@ public:
     }
 
     void setPalette (const TintPalette* p) noexcept { palette = p; }
+    void setExpandedMode (bool exp) { if (expanded != exp) { expanded = exp; repaint(); } }
     void setEnergy (float e) { energy += (juce::jlimit (0.0f, 1.0f, e) - energy) * 0.25f; }
 
     void paint (juce::Graphics& g) override
@@ -69,6 +70,7 @@ public:
     }
 
 private:
+    bool expanded = false;
     enum class Kind { dust, spark, comet, orbit };
 
     //--------------------------------------------------------------------------

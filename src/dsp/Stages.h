@@ -10,12 +10,12 @@ static constexpr int kMaxChannels = 8;
 
 //==============================================================================
 // Character：三种经典染色味道。
-// 它不是简单换预设，而是同时改变饱和的对称性、滤波曲线和压缩的性格。
+// 它不是简单换预设，而是同时改变饱和的对称性和滤波曲线。
 enum class Character
 {
     Tape    = 0,  // 磁带：对称为主，高频柔化，低频 head bump，带轻微 wow/flutter
     Tube    = 1,  // 电子管：强非对称，偶次谐波最丰富，中频厚，高频略暗
-    Console = 2   // 调音台：中等非对称，低频紧实，高频开，压缩更有 ATTACK 感
+    Console = 2   // 调音台：中等非对称，低频紧实，高频开
 };
 
 struct CharacterProfile
@@ -28,9 +28,6 @@ struct CharacterProfile
     float       airScale       = 1.0f;
     float       lowShelfHz     = 110.0f;
     float       weightScale    = 1.0f;
-    float       compAttackMs   = 12.0f;
-    float       compReleaseMs  = 140.0f;
-    float       compRatio      = 3.0f;
     float       wowFlutter     = 1.0f;
     const char* name           = "Tape";
 };
@@ -49,9 +46,6 @@ inline CharacterProfile getCharacterProfile (Character c)
             p.airScale         = 0.8f;
             p.lowShelfHz       = 130.0f;
             p.weightScale      = 1.15f;
-            p.compAttackMs     = 18.0f;
-            p.compReleaseMs    = 180.0f;
-            p.compRatio        = 2.5f;
             p.wowFlutter       = 0.0f;    // 电子管没有走带抖动
             p.name             = "Tube";
             break;
@@ -65,9 +59,6 @@ inline CharacterProfile getCharacterProfile (Character c)
             p.airScale         = 1.25f;
             p.lowShelfHz       = 90.0f;
             p.weightScale      = 0.9f;
-            p.compAttackMs     = 8.0f;
-            p.compReleaseMs    = 110.0f;
-            p.compRatio        = 4.0f;
             p.wowFlutter       = 0.0f;
             p.name             = "Console";
             break;
@@ -82,9 +73,6 @@ inline CharacterProfile getCharacterProfile (Character c)
             p.airScale         = 1.0f;
             p.lowShelfHz       = 110.0f;
             p.weightScale      = 1.0f;
-            p.compAttackMs     = 12.0f;
-            p.compReleaseMs    = 140.0f;
-            p.compRatio        = 3.0f;
             p.wowFlutter       = 1.0f;
             p.name             = "Tape";
             break;
@@ -665,7 +653,7 @@ private:
 // 狂野模式专属：GritStage —— 毛刺 / 不规则噪声
 //
 // 起因：狂野模式一推 drive，中频（吉他）和低频（贝斯）会迅速"变扁"。
-// 那是饱和 + 压缩把动态拍平了。**再加大饱和只会更扁**，所以这里走另一条路：
+// 那是强饱和把动态拍平了。**再加大饱和只会更扁**，所以这里走另一条路：
 // 不加重压，而是往信号里掺"不稳定"的东西——
 //
 //   1. 随机游走 LFO（速率自己也在漂）→ 整体呼吸不稳定，永远不会形成固定颤音
@@ -921,92 +909,7 @@ private:
 };
 
 //==============================================================================
-// 第四级：Comp —— 总线压缩
-//
-// 关键修正：包络检测必须在**线性域**做。
-// 上一版在 dB 域做一阶平滑——信号每次过零点 log10(|x|) 会砸到 -100 dB 底，
-// 把包络反复拽回谷底，导致包络永远爬不到阈值以上，压缩器实测增益衰减恒为 0。
-// 正确顺序：线性域取峰值 → 一阶平滑 → 再转 dB → 与阈值比较。
-class CompStage
-{
-public:
-    void prepare (double sr) noexcept
-    {
-        sampleRate = sr;
-        updateCoefs();
-        reset();
-    }
-
-    void reset() noexcept { env = 0.0f; gainReductionDb = 0.0f; }
-
-    void setParams (float threshDb, float ratio, float kneeDb,
-                    float attackMs, float releaseMs, float amount) noexcept
-    {
-        thresholdDb = threshDb;
-        ratio_      = juce::jmax (1.0f, ratio);
-        kneeDb_     = juce::jmax (0.0f, kneeDb);
-        attackMs_   = juce::jmax (0.05f, attackMs);
-        releaseMs_  = juce::jmax (5.0f, releaseMs);
-        amountNorm  = juce::jlimit (0.0f, 1.0f, amount);
-        updateCoefs();
-    }
-
-    // 输入：所有通道在该采样点的最大绝对值（线性）。返回：该点应施加的线性增益。
-    inline float computeGain (float peak) noexcept
-    {
-        // 1. 线性域峰值包络 + 一阶平滑（attack 快、release 慢）
-        const float c = (peak > env) ? attackCoef : releaseCoef;
-        env = c * env + (1.0f - c) * peak;
-
-        // 2. 转 dB 后与阈值比较（此时才是"电平"，不是"瞬时采样值"）
-        const float envDb = 20.0f * std::log10 (std::max (env, 1.0e-6f));
-
-        // 3. 软拐点静态曲线（Giannoulis 等，Digital Dynamic Range Compressor）
-        const float x = envDb - thresholdDb;
-        const float W = kneeDb_;
-        const float R = ratio_;
-
-        float grDb = 0.0f;
-        if (2.0f * x > W)
-        {
-            grDb = x * (1.0f / R - 1.0f);
-        }
-        else if (2.0f * x > -W && W > 0.0f)
-        {
-            const float t = x + W * 0.5f;
-            grDb = (1.0f / R - 1.0f) * t * t / (2.0f * W);
-        }
-        else if (2.0f * x > -W)
-        {
-            grDb = 0.0f;
-        }
-
-        grDb *= amountNorm;
-        gainReductionDb = juce::jlimit (-60.0f, 0.0f, grDb);
-        return std::pow (10.0f, gainReductionDb * 0.05f);
-    }
-
-    float getGainReductionDb() const noexcept { return gainReductionDb; }
-
-private:
-    void updateCoefs() noexcept
-    {
-        // 时间常数 → 一阶系数。注意这里是"达到 63% 所需时间"的常规定义。
-        attackCoef  = std::exp (-1.0f / std::max (1.0f, 0.001f * attackMs_  * (float) sampleRate));
-        releaseCoef = std::exp (-1.0f / std::max (1.0f, 0.001f * releaseMs_ * (float) sampleRate));
-    }
-
-    double sampleRate = 48000.0;
-    float  thresholdDb = -18.0f, ratio_ = 3.0f, kneeDb_ = 8.0f;
-    float  attackMs_ = 12.0f, releaseMs_ = 140.0f;
-    float  amountNorm = 1.0f;
-    float  attackCoef = 0.0f, releaseCoef = 0.0f;
-    float  env = 0.0f;
-    float  gainReductionDb = 0.0f;
-};
-
-//==============================================================================
-// 第五级：Output —— 输出变压器 + 总线胶水
+// 第四级：Output —— 输出变压器染色
 // 轻饱和 + 极轻的高频抛光 + 输出增益
 class OutputStage
 {
@@ -1031,9 +934,9 @@ public:
         }
     }
 
-    void setParams (float glue, float asym) noexcept
+    void setParams (float amount, float asym) noexcept
     {
-        glueNorm   = juce::jlimit (0.0f, 1.0f, glue);
+        amountNorm   = juce::jlimit (0.0f, 1.0f, amount);
         asymmetry  = juce::jlimit (0.0f, 1.0f, asym);
         update();
     }
@@ -1045,10 +948,10 @@ public:
     {
         float s = sheen[ch].process (x);
 
-        // 输出变压器：不只是"抛光"，满 glue 时这一级本身就是第二道饱和。
+        // 输出变压器：不只是"抛光"，满染色量时这一级本身就是第二道饱和。
         // 两级饱和叠加是"猛"的关键——单级再怎么推也只在波形上捏一下，
         // 两级会在已经被压平的峰值上再压实一次，谐波密度才上得去。
-        const float g = 1.0f + glueNorm * glueNorm * (wild_ ? 16.0f : 6.0f);
+        const float g = 1.0f + amountNorm * amountNorm * (wild_ ? 16.0f : 6.0f);
         float y = asymTanh (s * g, asymmetry) / g;
         return dc[ch].process (y);
     }
@@ -1062,7 +965,7 @@ private:
     }
 
     double sampleRate = 48000.0;
-    float  glueNorm = 0.0f, asymmetry = 0.3f;
+    float  amountNorm = 0.0f, asymmetry = 0.3f;
     bool   wild_ = false;
 
     Biquad    sheen[kMaxChannels];

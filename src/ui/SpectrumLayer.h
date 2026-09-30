@@ -34,6 +34,8 @@ public:
     }
 
     void setPalette (const TintPalette* p) noexcept { palette = p; }
+    void setExpandedMode (bool exp) { if (expanded != exp) { expanded = exp; repaint(); } }
+    void setWildMode (bool wild) { if (isWild != wild) { isWild = wild; buildBlobImages(); repaint(); } }
 
     // fresh = 这一帧是否真的有新数据。宿主停止调用 processBlock 时用它让柱子落下来。
     // peakValues = 分析器算好的峰值保持（可空）。衰减在分析器里做，这里只画。
@@ -76,12 +78,21 @@ public:
         if (palette == nullptr)
             return;
 
+        // ---- 2. 深色狂野模式：Netflix 风格动态彩色纵贯光束与穿梭条纹 ----
+        if (isWild)
+            drawNetflixLightBeams (g, w, h);
+
         drawBlobs    (g, w, h);
         drawSweep    (g, w, h);
-        drawSpectrum (g, w, h);
+
+        // 深色狂野模式下开启背景波形图（频谱发光曲面与峰值线）
+        if (isWild)
+            drawSpectrum (g, w, h);
     }
 
 private:
+    bool expanded = false;
+    bool isWild   = false;
     void timerCallback() override
     {
         // 时间推进和峰值衰减放在这里，不放 paint ——
@@ -125,6 +136,55 @@ private:
 
         g.setGradientFill (sweep);
         g.fillRect (getLocalBounds());
+    }
+
+    //--------------------------------------------------------------------------
+    // 类似 Netflix 开场特写的贯穿全屏动态彩色纵贯光束与穿梭条纹
+    //--------------------------------------------------------------------------
+    void drawNetflixLightBeams (juce::Graphics& g, float w, float h)
+    {
+        const int numBeams = 24;
+        for (int i = 0; i < numBeams; ++i)
+        {
+            // 每根光条具有独立的随机种子相位、频率和宽度
+            const float seed = (float) i * 1.6180339f;
+            const float xNorm = std::fmod (0.05f + (float) i * 0.042f + std::sin (t * 0.15f + seed) * 0.08f + 1.0f, 1.0f);
+            const float bx = xNorm * w;
+
+            // 闪烁生命周期
+            const float cycleSpeed = 1.2f + 0.8f * std::sin (seed * 3.7f);
+            const float phase = t * cycleSpeed + seed * 2.0f;
+            const float rawPulse = 0.5f + 0.5f * std::sin (phase);
+            const float flash = std::pow (rawPulse, 4.0f); // 突发闪烁脉冲
+
+            if (flash < 0.02f)
+                continue;
+
+            const float beamW = (1.5f + 4.5f * std::sin (seed * 5.1f)) * (1.0f + energy * 1.5f);
+            const float alpha = flash * (0.15f + 0.35f * energy);
+
+            // 依据位置和索引赋予全息光谱色
+            const float colorPos = std::fmod (xNorm + std::sin (t * 0.3f + seed) * 0.2f + 1.0f, 1.0f);
+            const auto beamCol = palette->at (colorPos);
+
+            // 上下贯穿的全屏光柱渐变（中间亮，上下渐隐）
+            juce::ColourGradient beamGrad (
+                beamCol.withAlpha (0.0f), bx, 0.0f,
+                beamCol.withAlpha (0.0f), bx, h, false);
+            beamGrad.addColour (0.20, beamCol.withAlpha (alpha * 0.5f));
+            beamGrad.addColour (0.50, beamCol.withAlpha (alpha));
+            beamGrad.addColour (0.80, beamCol.withAlpha (alpha * 0.5f));
+
+            g.setGradientFill (beamGrad);
+            g.fillRect (bx - beamW * 0.5f, 0.0f, beamW, h);
+
+            // 极高能量时的中心炽白细线
+            if (flash > 0.65f && energy > 0.15f)
+            {
+                g.setColour (juce::Colours::white.withAlpha (flash * 0.40f * energy));
+                g.fillRect (bx - 0.5f, 0.0f, 1.0f, h);
+            }
+        }
     }
 
     //--------------------------------------------------------------------------
@@ -196,21 +256,39 @@ private:
     }
 
     //--------------------------------------------------------------------------
+    // 高保真高斯弥散柔光光斑生成（数学级平滑指数衰减，彻底消除色带与锯齿）
     void buildBlobImages()
     {
+        const int size = 256;
+        const float half = (float) size * 0.5f;
+
         for (int i = 0; i < 4; ++i)
         {
-            juce::Image img (juce::Image::ARGB, 128, 128, true);
-            juce::Graphics ig (img);
+            juce::Image img (juce::Image::ARGB, size, size, true);
+            juce::Image::BitmapData bm (img, juce::Image::BitmapData::writeOnly);
 
             const auto c = OzoCol::tint[(size_t) i];
 
-            // 外圈必须用"同色 + alpha 0"，不能用 transparentBlack，
-            // 否则混合中途会发灰（JUCE 文档里专门警告过这一点）。
-            juce::ColourGradient grad (c.withAlpha (0.22f), 64.0f, 64.0f,
-                                       c.withAlpha (0.0f),  128.0f, 64.0f, true);
-            ig.setGradientFill (grad);
-            ig.fillEllipse (0.0f, 0.0f, 128.0f, 128.0f);
+            for (int y = 0; y < size; ++y)
+            {
+                const float dy = ((float) y - half) / half;
+                for (int x = 0; x < size; ++x)
+                {
+                    const float dx = ((float) x - half) / half;
+                    const float distSq = dx * dx + dy * dy;
+
+                    if (distSq < 1.0f)
+                    {
+                        const float d = std::sqrt (distSq);
+                        // 三次 Smoothstep 混合指数高斯衰减
+                        const float s = 1.0f - d;
+                        const float smooth = s * s * (3.0f - 2.0f * s);
+                        const float alpha = smooth * std::exp (-2.4f * d * d) * 0.32f;
+
+                        bm.setPixelColour (x, y, c.withAlpha (alpha));
+                    }
+                }
+            }
 
             blobImg[(size_t) i] = std::move (img);
         }

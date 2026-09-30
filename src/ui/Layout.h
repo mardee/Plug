@@ -4,24 +4,26 @@ namespace ozo
 {
 
 //==============================================================================
-// 版面尺寸 —— 改这里就能整体调整布局
-//
-// Editor 和 PanelLayer 都要用（面板是在 PanelLayer 里画的），
-// 所以单独拎出来，两边 include 同一份，别各写一套。
+// 版面尺寸 —— EXPERT 抽屉浮窗位于右侧 1/3 区域 (宽 320px)
+//==============================================================================
 namespace Layout
 {
-    const int width  = 780;
-    const int height = 480;
+    const int width  = 960;
+    const int height = 490;
 
     const int margin = 20;
 
     const int headerY = 0,  headerH = 60;
 
-    const int panel1Y = 66,  panel1H = 186;
-    const int panel2Y = 258, panel2H = 118;
+    // EXPERT 侧边抽屉浮窗
+    const int drawerW = 320;
+    const int drawerX = width - drawerW; // 640
 
-    const int presetY = 382, presetH = 38;
-    const int footerY = 424;
+    // 主视区（ONE-KNOB 区域）
+    const int mainViewW = width;            // 收起时全幅 960
+    const int mainViewCollapsedW = drawerX; // 展开时左侧 640
+
+    const int footerY = 464;
 }
 
 } // namespace ozo

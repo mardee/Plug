@@ -3,8 +3,6 @@
 namespace ozo
 {
 
-// 版面尺寸在 ui/Layout.h 里，Editor 和 PanelLayer 共用同一份。
-
 //==============================================================================
 EZampEditor::EZampEditor (EZampProcessor& p)
     : juce::AudioProcessorEditor (p),
@@ -12,9 +10,7 @@ EZampEditor::EZampEditor (EZampProcessor& p)
 {
     setLookAndFeel (&lnf);
 
-    // 背景三层，顺序即层级（JUCE 按加入顺序绘制子组件）：
-    //   频谱垫在最底 → 面板夹在中间 → 粒子飘在最上面
-    // 面板必须做成独立组件，否则它作为 Editor::paint 的一部分会被频谱盖住。
+    // 背景三层，顺序即层级：频谱 → 面板 → 粒子
     spectrumLayer.setPalette (&palette);
     particleLayer.setPalette (&palette);
 
@@ -22,53 +18,85 @@ EZampEditor::EZampEditor (EZampProcessor& p)
     addAndMakeVisible (panelLayer);
     addAndMakeVisible (particleLayer);
 
-    // 注意：setSize 会立刻触发一次 resized()，所以必须放在所有控件建好之后，
-    // 否则 resized() 里访问 knobs / outKnobs 时容器还是空的（空指针解引用直接崩）。
-    // 上一版就是把它写在构造函数第一行，宿主一打开界面就 SIGSEGV。
-
     // ---------------------------------------------------------------------
-    // 主旋钮。四个染色旋钮各占一个粉彩主题色：
-    //   Drive=亮粉  Weight=薰衣草  Air=薄荷  Glue=蜜桃
-    // 同一个色也决定了背景频谱与粒子的配色权重。
+    // 专家模式旋钮 (0=Drive, 1=Weight, 2=Air)
     // ---------------------------------------------------------------------
     addKnob (ParamID::input,  "INPUT",  " dB", 1, true,  -1);
     addKnob (ParamID::drive,  "DRIVE",  " %",  0, false,  0);
     addKnob (ParamID::weight, "WEIGHT", " %",  0, false,  1);
     addKnob (ParamID::air,    "AIR",    " %",  0, false,  2);
-    addKnob (ParamID::glue,   "GLUE",   " %",  0, false,  3);
 
     addKnob (ParamID::output, "OUTPUT", " dB", 1, true,  -1);
     addKnob (ParamID::mix,    "MIX",    " %",  0, false, -1);
 
     // ---------------------------------------------------------------------
-    // Character
+    // ONE-KNOB 巨型主控旋钮
     // ---------------------------------------------------------------------
-    const char* charNames[3] = { "Tape", "Tube", "Console" };
-
-    for (int i = 0; i < 3; ++i)
+    prismKnob.onValueChanged = [this] (float v)
     {
-        auto& b = charButtons[i];
-        b.setButtonText (charNames[i]);
-        b.setClickingTogglesState (false);
-        b.onClick = [this, i]
+        if (! isExpandedView || isToneLinked)
+            applyMacroToParams (v);
+        else
         {
-            if (auto* param = processor.getAPVTS().getParameter (ParamID::character))
-                param->setValueNotifyingHost (param->convertTo0to1 ((float) i));
-        };
-        addAndMakeVisible (b);
-    }
+            // 解锁状态下大光球仅独立控制 Drive
+            if (auto* dp = processor.getAPVTS().getParameter (ParamID::drive))
+                dp->setValueNotifyingHost (std::pow (v, 0.95f));
+        }
+    };
+
+    prismKnob.onDoubleClicked = [this]
+    {
+        setViewMode (! isExpandedView);
+    };
+    addAndMakeVisible (prismKnob);
 
     // ---------------------------------------------------------------------
-    // 预设
+    // 形态切换按钮 ViewToggleBar
     // ---------------------------------------------------------------------
-    for (int i = 0; i < PresetFactory::getNumPresets(); ++i)
+    viewToggle.onViewModeChanged = [this] (bool expanded)
     {
-        auto& b = presetButtons[i];
-        b.setButtonText (PresetFactory::getName (i));
-        b.setClickingTogglesState (false);
-        b.onClick = [this, i] { processor.applyPreset (i); };
-        addAndMakeVisible (b);
-    }
+        setViewMode (expanded);
+    };
+    addAndMakeVisible (viewToggle);
+
+    // ---------------------------------------------------------------------
+    // Character 拨钮
+    // ---------------------------------------------------------------------
+    charPicker.onSelect = [this] (int i)
+    {
+        if (auto* param = processor.getAPVTS().getParameter (ParamID::character))
+            param->setValueNotifyingHost (param->convertTo0to1 ((float) i));
+    };
+    addAndMakeVisible (charPicker);
+
+    // ---------------------------------------------------------------------
+    // 预设条
+    // ---------------------------------------------------------------------
+    presetBar.onSelect = [this] (int index)
+    {
+        const juce::ScopedValueSetter<bool> guard (applyingPreset, true);
+        processor.applyPreset (index);
+        updateMacroFromParams();
+    };
+    presetBar.onSave   = [this] { promptSavePreset(); };
+    presetBar.onDelete = [this] (int index)
+    {
+        processor.deleteUserPreset (index);
+        refreshPresetBar();
+    };
+
+    refreshPresetBar();
+    addAndMakeVisible (presetBar);
+
+    // 监听全部参数
+    const juce::String* ids[] = {
+        &ParamID::input, &ParamID::drive, &ParamID::character, &ParamID::weight,
+        &ParamID::air,   &ParamID::output, &ParamID::mix,
+        &ParamID::match, &ParamID::hq,    &ParamID::wild
+    };
+
+    for (auto* id : ids)
+        processor.getAPVTS().addParameterListener (*id, this);
 
     // ---------------------------------------------------------------------
     // 开关
@@ -85,39 +113,195 @@ EZampEditor::EZampEditor (EZampProcessor& p)
     addAndMakeVisible (hqButton);
 
     // ---------------------------------------------------------------------
-    // 狂野模式开关
-    //
-    // 它不是"多一个效果旋钮"：打开后 DSP 换算法（波形折叠 + 次八度）、
-    // 各级参数加倍，界面整套转成炽热暗色。所以点击之后要刷新整个主题。
+    // Weight & Air 智能联动锁按钮
     // ---------------------------------------------------------------------
-    // 按钮上是两张手绘涂鸦（闭眼 / 睁眼），不走文字
+    linkButton.setButtonText ("LINKED");
+    linkButton.setToggleState (true, juce::dontSendNotification);
+    linkButton.onClick = [this]
+    {
+        isToneLinked = linkButton.getToggleState();
+        linkButton.setButtonText (isToneLinked ? "LINKED" : "UNLINK");
+        if (isToneLinked)
+        {
+            if (auto* dp = processor.getAPVTS().getParameter (ParamID::drive))
+                applyMacroToParams (dp->getValue());
+        }
+    };
+    addAndMakeVisible (linkButton);
+
+    // ---------------------------------------------------------------------
+    // 狂野模式开关（默认隐藏，满档时浮现）
+    // ---------------------------------------------------------------------
     wildAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
         processor.getAPVTS(), ParamID::wild, wildButton);
 
-    // 立即生效，不等下一帧 —— 开关的手感不能拖
-    wildButton.onClick = [this] { applyWildTheme (wildButton.getToggleState()); };
-    addAndMakeVisible (wildButton);
+    wildButton.onClick = [this]
+    {
+        const bool w = wildButton.getToggleState();
+        if (w != lastWild)
+        {
+            applyWildTheme (w);
+            if (! isExpandedView)
+            {
+                prismKnob.setValue (0.30f, juce::sendNotification);
+                applyMacroToParams (0.30f);
+            }
+            else
+            {
+                if (auto* dp = processor.getAPVTS().getParameter (ParamID::drive))
+                    dp->setValueNotifyingHost (0.30f);
+            }
+        }
+    };
+    addChildComponent (wildButton); // 初始隐藏
 
-    // ---------------------------------------------------------------------
-    addAndMakeVisible (grMeter);
     addAndMakeVisible (inBar);
     addAndMakeVisible (outBar);
 
-    // 所有控件就位后再定尺寸——这一行会触发第一次 resized()
+    // 默认初始为 ONE-KNOB 聚焦形态
+    setViewMode (false);
+
     setSize (Layout::width, Layout::height);
 
-    // 恢复工程时可能已经是狂野状态，先把界面同步成参数当前值
+    // 恢复工程时若已是狂野状态则同步主题与显示
     bool wildNow = false;
     if (auto* p = processor.getAPVTS().getRawParameterValue (ParamID::wild))
         wildNow = p->load() > 0.5f;
     applyWildTheme (wildNow);
 
+    updateMacroFromParams();
     startTimerHz (30);
 }
 
 EZampEditor::~EZampEditor()
 {
+    const juce::String* ids[] = {
+        &ParamID::input, &ParamID::drive, &ParamID::character, &ParamID::weight,
+        &ParamID::air,   &ParamID::output, &ParamID::mix,
+        &ParamID::match, &ParamID::hq,    &ParamID::wild
+    };
+
+    for (auto* id : ids)
+        processor.getAPVTS().removeParameterListener (*id, this);
+
     setLookAndFeel (nullptr);
+}
+
+//==============================================================================
+void EZampEditor::setViewMode (bool expanded)
+{
+    isExpandedView = expanded;
+    targetDrawerProgress = expanded ? 1.0f : 0.0f;
+    viewToggle.setExpanded (expanded);
+
+    // 唤醒组件可见性（动画结束前保持可见）
+    prismKnob.setVisible (true);
+
+    if (knobs.size() >= 3)
+    {
+        knobs[0]->slider.setVisible (false); // Drive 旋钮隐藏（由大光球主控）
+        knobs[0]->name.setVisible   (false);
+        knobs[0]->value.setVisible  (false);
+
+        knobs[1]->slider.setVisible (true); // Weight
+        knobs[1]->name.setVisible   (true);
+        knobs[1]->value.setVisible  (true);
+
+        knobs[2]->slider.setVisible (true); // Air
+        knobs[2]->name.setVisible   (true);
+        knobs[2]->value.setVisible  (true);
+    }
+
+    for (size_t i = 0; i < outKnobs.size(); ++i)
+    {
+        outKnobs[i]->slider.setVisible (true);
+        outKnobs[i]->name.setVisible (true);
+        outKnobs[i]->value.setVisible (true);
+    }
+
+    linkButton.setVisible (true);
+    charPicker.setVisible (true);
+    presetBar.setVisible  (true);
+    inBar.setVisible      (true);
+    outBar.setVisible     (true);
+    matchButton.setVisible (true);
+    hqButton.setVisible   (true);
+
+    // 若直接初始化（未开定时器前），直接对齐
+    if (drawerProgress == 0.0f && ! expanded)
+    {
+        for (size_t i = 1; i < knobs.size(); ++i)
+        {
+            knobs[i]->slider.setVisible (false);
+            knobs[i]->name.setVisible (false);
+            knobs[i]->value.setVisible (false);
+        }
+        for (size_t i = 0; i < outKnobs.size(); ++i)
+        {
+            outKnobs[i]->slider.setVisible (false);
+            outKnobs[i]->name.setVisible (false);
+            outKnobs[i]->value.setVisible (false);
+        }
+        linkButton.setVisible (false);
+        charPicker.setVisible (false);
+        presetBar.setVisible (false);
+        inBar.setVisible (false);
+        outBar.setVisible (false);
+        matchButton.setVisible (false);
+        hqButton.setVisible (false);
+    }
+
+    resized();
+    repaint();
+}
+
+//==============================================================================
+// ONE-KNOB 宏映射算法：驱动 Drive / Weight / Air 协同推进
+//==============================================================================
+void EZampEditor::applyMacroToParams (float m)
+{
+    if (updatingMacro)
+        return;
+
+    const juce::ScopedValueSetter<bool> guard (updatingMacro, true);
+
+    auto setP = [this] (const juce::String& id, float normVal)
+    {
+        if (auto* p = processor.getAPVTS().getParameter (id))
+            p->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, normVal));
+    };
+
+    // Drive: 0~1 线性带微上翘
+    const float driveVal  = std::pow (m, 0.95f);
+    // Weight: 前期迅速铺开厚度 (0~0.8)
+    const float weightVal = std::sin (m * 1.57079f) * 0.85f;
+    // Air: 中前期上升到通透区 (0~0.75)
+    const float airVal    = std::sin (m * 1.57079f) * 0.75f;
+
+    setP (ParamID::drive,  driveVal);
+    setP (ParamID::weight, weightVal);
+    setP (ParamID::air,    airVal);
+}
+
+void EZampEditor::updateMacroFromParams()
+{
+    if (updatingMacro)
+        return;
+
+    auto getP = [this] (const juce::String& id) -> float
+    {
+        if (auto* p = processor.getAPVTS().getParameter (id))
+            return p->getValue();
+        return 0.5f;
+    };
+
+    const float d = getP (ParamID::drive);
+    const float w = getP (ParamID::weight);
+    const float a = getP (ParamID::air);
+
+    // 估算等效宏值：保留原权重比例，并将三个参数的权重归一化。
+    const float avg = (d * 0.5f) + (w * 0.25f) + (a * 0.25f);
+    prismKnob.setValue (avg, juce::dontSendNotification);
 }
 
 //==============================================================================
@@ -138,8 +322,6 @@ void EZampEditor::addKnob (const juce::String& paramId, const juce::String& disp
     k->slider.setDoubleClickReturnValue (true, paramId == ParamID::input
                                             || paramId == ParamID::output ? 0.0 : 50.0);
 
-    // 主题色通过 Slider 的属性传给 LookAndFeel —— 让绘制层自己去查，
-    // 比在 Editor 里硬塞颜色干净，换皮肤时也不用改这里。
     if (theme >= 0)
         k->slider.getProperties().set (OzoCol::propTheme, theme);
 
@@ -161,7 +343,7 @@ void EZampEditor::addKnob (const juce::String& paramId, const juce::String& disp
     addAndMakeVisible (k->name);
     addAndMakeVisible (k->value);
 
-    if (paramId == ParamID::output || paramId == ParamID::mix)
+    if (paramId == ParamID::input || paramId == ParamID::output || paramId == ParamID::mix)
         outKnobs.push_back (std::move (k));
     else
         knobs.push_back (std::move (k));
@@ -170,8 +352,6 @@ void EZampEditor::addKnob (const juce::String& paramId, const juce::String& disp
 //==============================================================================
 void EZampEditor::paint (juce::Graphics& g)
 {
-    // 面板、品牌、页脚全都搬去 PanelLayer 了（那里才能被夹在频谱和粒子中间）。
-    // 这里只剩一层兜底底色，防止背景层还没铺开时露出残影。
     g.fillAll (OzoCol::bg);
 }
 
@@ -189,71 +369,86 @@ void EZampEditor::layoutKnob (Knob& k, float centreX, float y, float size)
 
 void EZampEditor::resized()
 {
-    // 三层背景铺满整个窗口（即使控件还没建齐也要铺，所以放在兜底判断之前）
     spectrumLayer.setBounds (getLocalBounds());
     panelLayer.setBounds    (getLocalBounds());
     particleLayer.setBounds (getLocalBounds());
 
-    // 兜底：控件还没建齐时不要布局（防御未来有人在构造中途触发 resized）
-    if (knobs.size() < 5 || outKnobs.size() < 2)
+    if (knobs.size() < 3 || outKnobs.size() < 3)
         return;
 
-    // ---- 主旋钮：5 个，均分面板宽度 ----
-    const int panelX = Layout::margin;
-    const int panelW = getWidth() - 2 * Layout::margin;
-    const float step = (float) panelW / 5.0f;
-    const float centre0 = (float) panelX + step * 0.5f;
+    const float fullW = (float) getWidth();
+    const float fullH = (float) getHeight();
+    const float dw = (float) Layout::drawerW;
 
-    for (size_t i = 0; i < knobs.size(); ++i)
-        layoutKnob (*knobs[i], centre0 + step * (float) i, (float) (Layout::panel1Y + 12), 84.0f);
+    // 当前抽屉起始 X 坐标（动画中从 fullW 平滑滑入到 Layout::drawerX）
+    const float dx = fullW - dw * drawerProgress;
+    const float mainW = dx; // 左侧主视区宽度
+    const float mainCx = mainW * 0.5f;
 
-    // ---- Character 按钮 ----
-    const int charY = Layout::panel1Y + 152;   // 底部留 6 px，别顶出面板
-    const int charW = 110, charGap = 10, charH = 28;
-    const int charTotal = 3 * charW + 2 * charGap;
-    int charX = panelX + (panelW - charTotal) / 2;
+    // 1. 主控全息 PRISM 光球平滑位移
+    prismKnob.setBounds (0, 0, juce::roundToInt (mainW), juce::roundToInt (fullH));
 
-    for (int i = 0; i < 3; ++i)
+    // 2. WILD 按钮跟随主视区中心平滑位移
+    wildButton.setBounds (juce::roundToInt (mainCx - 60.0f), getHeight() - 56, 120, 32);
+
+    // 3. 右上角形态切换胶囊
+    if (drawerProgress > 0.5f)
+        viewToggle.setBounds (juce::roundToInt (dx + dw - 104.0f), 14, 90, 24);
+    else
+        viewToggle.setBounds (getWidth() - Layout::margin - 96, 18, 96, 24);
+
+    // 4. 抽屉内部子组件随 dx 实时动态排布
+    if (drawerProgress > 0.005f)
     {
-        charButtons[i].setBounds (charX, charY, charW, charH);
-        charX += charW + charGap;
+        // ---------------------------------------------------------------------
+        // 分区 1: TONE SHAPING (Weight & Air + Link 按钮)
+        // ---------------------------------------------------------------------
+        linkButton.setBounds (juce::roundToInt (dx + (dw - 96.0f) * 0.5f), 70, 96, 20);
+
+        const float knobY = 96.0f;
+        const float knobSize = 54.0f;
+        const float toneKnob1X = dx + dw * 0.30f;
+        const float toneKnob2X = dx + dw * 0.70f;
+
+        layoutKnob (*knobs[1], toneKnob1X, knobY, knobSize); // Weight
+        layoutKnob (*knobs[2], toneKnob2X, knobY, knobSize); // Air
+
+        // ---------------------------------------------------------------------
+        // 分区 2: CHARACTER & ROUTING (Character + In/Out/Mix)
+        // ---------------------------------------------------------------------
+        charPicker.setBounds (juce::roundToInt (dx + 26.0f), 214, juce::roundToInt (dw - 52.0f), 28);
+
+        const float routeY = 250.0f;
+        const float routeKnobSize = 48.0f;
+        const float routeStep = (dw - 36.0f) / 3.0f;
+        const float routeX0   = (dx + 18.0f) + routeStep * 0.5f;
+
+        for (size_t i = 0; i < outKnobs.size(); ++i)
+            layoutKnob (*outKnobs[i], routeX0 + routeStep * (float) i, routeY, routeKnobSize);
+
+        // ---------------------------------------------------------------------
+        // 分区 3: LEVELS & PRESETS (In/Out 双联竖表 + 预设条 + 辅助开关)
+        // ---------------------------------------------------------------------
+        const int mTop = 364;
+        const int mH   = 100;
+        const int mW   = 36;
+        const int mGap = 6;
+        const int mLeft = juce::roundToInt (dx + 26.0f);
+
+        inBar.setBounds  (mLeft,             mTop, mW, mH);
+        outBar.setBounds (mLeft + mW + mGap, mTop, mW, mH);
+
+        const int rightControlsX = mLeft + 2 * mW + mGap + 14;
+        const int rightControlsW = juce::roundToInt (dx + dw - (float) rightControlsX - 22.0f);
+
+        presetBar.setBounds (rightControlsX, mTop, rightControlsW, 30);
+
+        matchButton.setBounds (rightControlsX, mTop + 40, rightControlsW, 24);
+        hqButton.setBounds    (rightControlsX, mTop + 68, rightControlsW, 24);
     }
-
-    // ---- 输出旋钮（比主旋钮小一号，且要让名称+数值都在面板内）----
-    layoutKnob (*outKnobs[0], (float) panelX + 78.0f,  (float) (Layout::panel2Y + 14), 68.0f);
-    layoutKnob (*outKnobs[1], (float) panelX + 196.0f, (float) (Layout::panel2Y + 14), 68.0f);
-
-    // ---- 表 ----
-    grMeter.setBounds (290, Layout::panel2Y + 28, getWidth() - 290 - Layout::margin, 34);
-    inBar.setBounds   (290, Layout::panel2Y + 68, getWidth() - 290 - Layout::margin, 15);
-    outBar.setBounds  (290, Layout::panel2Y + 87, getWidth() - 290 - Layout::margin, 15);
-
-    // ---- 预设按钮 ----
-    const int numPresets = PresetFactory::getNumPresets();
-    const int presetW = 116, presetGap = 8;
-    const int presetTotal = numPresets * presetW + (numPresets - 1) * presetGap;
-    int presetX = panelX + (panelW - presetTotal) / 2;
-
-    for (int i = 0; i < numPresets; ++i)
-    {
-        presetButtons[i].setBounds (presetX, Layout::presetY, presetW, Layout::presetH);
-        presetX += presetW + presetGap;
-    }
-
-    // ---- 头部开关 ----
-    // WILD 比另外两个大一号：它是模式开关，不是小选项
-    // WILD 比另外两个大一号：它是模式开关，不是小选项。
-    // 涂鸦字形比普通字体占地方，所以再放宽一点，否则描边会被切掉。
-    wildButton.setBounds  (getWidth() - 360, 12, 150, 46);
-    matchButton.setBounds (getWidth() - 210, 20, 96, 22);
-    hqButton.setBounds    (getWidth() - 104, 20, 80, 22);
 }
 
 //==============================================================================
-// 切换狂野主题。换色之后有三件事必须做，缺一件界面就会卡在旧主题上：
-//   1. OzoCol::apply       —— 换掉颜色变量本身
-//   2. lnf.refreshColours  —— LookAndFeel 的 setColour 是拷贝值，不会自动跟
-//   3. palette.refresh     —— 频谱配色 LUT 只在权重变化时重算，换色不触发
 void EZampEditor::applyWildTheme (bool wild)
 {
     lastWild = wild;
@@ -261,8 +456,11 @@ void EZampEditor::applyWildTheme (bool wild)
     OzoCol::apply (wild);
     lnf.refreshColours();
     palette.refresh();
+    panelLayer.setWildMode (wild);
+    spectrumLayer.setWildMode (wild);
+    viewToggle.setWildMode (wild);
+    prismKnob.setWildMode (wild);
 
-    // 旋钮标签的颜色是建控件时按当时的 tintText 定死的，得重设
     auto retheme = [] (Knob& k)
     {
         const int t = k.theme;
@@ -275,7 +473,6 @@ void EZampEditor::applyWildTheme (bool wild)
     for (auto& k : knobs)    retheme (*k);
     for (auto& k : outKnobs) retheme (*k);
 
-    // 父组件 repaint 不会带走子组件，得逐个刷
     for (int i = 0; i < getNumChildComponents(); ++i)
         if (auto* c = getChildComponent (i))
             c->repaint();
@@ -284,62 +481,58 @@ void EZampEditor::applyWildTheme (bool wild)
 }
 
 //==============================================================================
-bool EZampEditor::paramCloseTo (const juce::String& id, float value, float tol) const
+void EZampEditor::parameterChanged (const juce::String&, float)
 {
-    auto* p = processor.getAPVTS().getParameter (id);
-    if (p == nullptr)
-        return false;
-    return std::abs (p->getValue() - p->convertTo0to1 (value)) < tol;
+    if (! applyingPreset)
+        processor.clearPresetIndex();
 }
 
-int EZampEditor::detectPreset() const
+void EZampEditor::refreshPresetBar()
 {
-    auto* charParam = processor.getAPVTS().getParameter (ParamID::character);
-    if (charParam == nullptr)
-        return -1;
+    std::vector<PresetEntry> list;
+    list.reserve ((size_t) (PresetFactory::kFactoryCount + processor.getUserPresets().size()));
 
-    const int charIdx = juce::roundToInt (charParam->convertFrom0to1 (charParam->getValue()));
+    for (int i = 0; i < PresetFactory::kFactoryCount; ++i)
+        list.push_back ({ PresetFactory::getName (i), true, PresetFactory::isWild (i) });
 
-    for (int i = 0; i < PresetFactory::getNumPresets(); ++i)
+    for (int i = 0; i < processor.getUserPresets().size(); ++i)
     {
-        const Preset& p = PresetFactory::get (i);
-
-        if (charIdx != (int) p.character)
-            continue;
-
-        if (! paramCloseTo (ParamID::input,  p.inputDb,        0.01f)) continue;
-        if (! paramCloseTo (ParamID::drive,  p.drive  * 100.0f, 0.01f)) continue;
-        if (! paramCloseTo (ParamID::weight, p.weight * 100.0f, 0.01f)) continue;
-        if (! paramCloseTo (ParamID::air,    p.air    * 100.0f, 0.01f)) continue;
-        if (! paramCloseTo (ParamID::glue,   p.glue   * 100.0f, 0.01f)) continue;
-        if (! paramCloseTo (ParamID::output, p.outputDb,        0.01f)) continue;
-        if (! paramCloseTo (ParamID::mix,    p.mix    * 100.0f, 0.01f)) continue;
-
-        return i;
+        const auto& e = processor.getUserPresets().get (i);
+        list.push_back ({ e.name, false, e.params.wild });
     }
 
-    return -1;
+    presetBar.setEntries (std::move (list), processor.getPresetIndex());
+    lastPresetIndex = processor.getPresetIndex();
+}
+
+void EZampEditor::promptSavePreset()
+{
+    auto* dialog = new juce::AlertWindow ("Save Preset",
+                                           "Name this sound.",
+                                           juce::AlertWindow::NoIcon);
+
+    dialog->addTextEditor ("name", "My Preset", "Name:");
+    dialog->addButton ("Save",   1, juce::KeyPress (juce::KeyPress::returnKey));
+    dialog->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    dialog->enterModalState (true, juce::ModalCallbackFunction::create (
+        [this, dialog] (int result)
+        {
+            if (result != 1)
+                return;
+
+            const auto name = dialog->getTextEditorContents ("name").trim();
+            if (name.isEmpty())
+                return;
+
+            processor.saveUserPreset (name);
+            refreshPresetBar();
+        }), true);
 }
 
 //==============================================================================
 void EZampEditor::timerCallback()
 {
-    // ---- 表 ----
-    const auto& chain = processor.getChain();
-
-    grMeter.setGainReductionDb (chain.getGainReductionDb());
-    grMeter.tick();
-
-    inBar.setLevelDb  (chain.getInputLevelDb());
-    outBar.setLevelDb (chain.getOutputLevelDb());
-    inBar.tick();
-    outBar.tick();
-
-    grMeter.repaint();
-    inBar.repaint();
-    outBar.repaint();
-
-    // ---- 数值标签 ----
     auto updateValue = [] (Knob& k)
     {
         const double v = k.slider.getValue();
@@ -355,54 +548,103 @@ void EZampEditor::timerCallback()
     for (auto& k : knobs)    updateValue (*k);
     for (auto& k : outKnobs) updateValue (*k);
 
-    // ---- Character 高亮 ----
     auto* charParam = processor.getAPVTS().getParameter (ParamID::character);
     if (charParam != nullptr)
-    {
-        const int idx = juce::jlimit (0, 2,
-            juce::roundToInt (charParam->convertFrom0to1 (charParam->getValue())));
+        charPicker.setIndex (juce::roundToInt (
+            charParam->convertFrom0to1 (charParam->getValue())));
 
-        if (idx != lastCharIndex)
-        {
-            lastCharIndex = idx;
-            for (int i = 0; i < 3; ++i)
-                charButtons[i].setToggleState (i == idx, juce::dontSendNotification);
-        }
-    }
+    charPicker.tick();
 
-    // ---- 预设高亮 ----
-    const int presetIdx = detectPreset();
-    if (presetIdx != lastPresetIndex)
-    {
-        lastPresetIndex = presetIdx;
-        for (int i = 0; i < PresetFactory::getNumPresets(); ++i)
-            presetButtons[i].setToggleState (i == presetIdx, juce::dontSendNotification);
-    }
+    if (processor.getPresetIndex() != lastPresetIndex)
+        refreshPresetBar();
 
-    // ---- 狂野模式兜底 ----
-    // 按钮点击已经在 onClick 里即时生效了；这条是给"参数被外部改"的情况兜底：
-    // 宿主自动化、加载工程、撤销重做都可能绕过按钮直接改参数。
+    // -------------------------------------------------------------------------
+    // 狂野模式开关彩蛋：满档 (One-Knob 100% 或 Drive 100%) 时才浮现
+    // -------------------------------------------------------------------------
+    float driveVal = 0.0f;
+    if (auto* dp = processor.getAPVTS().getParameter (ParamID::drive))
+        driveVal = dp->getValue();
+
+    const bool isMaxOverdrive = (! isExpandedView && prismKnob.getValue() >= 0.995f)
+                             || (isExpandedView && driveVal >= 0.995f);
+    const bool isWildActive = wildButton.getToggleState();
+
+    // 只要达到 100% 满档，或者 WILD 当前已被开启，开关就必须保持可见
+    const bool shouldShowWild = isMaxOverdrive || isWildActive;
+
+    wildButton.setTargetVisible (shouldShowWild);
+
     if (auto* wildParam = processor.getAPVTS().getRawParameterValue (ParamID::wild))
     {
         const bool w = wildParam->load() > 0.5f;
         if (w != lastWild)
+        {
             applyWildTheme (w);
+            if (! isExpandedView)
+            {
+                prismKnob.setValue (0.30f, juce::sendNotification);
+                applyMacroToParams (0.30f);
+            }
+            else
+            {
+                if (auto* dp = processor.getAPVTS().getParameter (ParamID::drive))
+                    dp->setValueNotifyingHost (0.30f);
+            }
+        }
     }
 
-    // ---- WILD 开关的光晕闪烁 ----
-    // 两个不同频率的正弦相乘 → 看起来像不规则呼吸，而不是机械的脉冲。
     wildClock += 1.0f / 30.0f;
     wildButton.setFlicker (0.5f + 0.5f * std::sin (wildClock * 5.3f)
                                       * std::sin (wildClock * 2.1f + 1.7f));
+    wildButton.setAnimationTime (wildClock);
 
-    // 页脚的匹配增益是活的，跟着重绘
+    // -------------------------------------------------------------------------
+    // 抽屉平滑过渡插值驱动 (Drawer Slide Animation)
+    // -------------------------------------------------------------------------
+    if (std::abs (drawerProgress - targetDrawerProgress) > 0.002f)
+    {
+        drawerProgress += (targetDrawerProgress - drawerProgress) * 0.28f;
+        panelLayer.setDrawerProgress (drawerProgress);
+        resized();
+        repaint();
+    }
+    else if (drawerProgress != targetDrawerProgress)
+    {
+        drawerProgress = targetDrawerProgress;
+        panelLayer.setDrawerProgress (drawerProgress);
+
+        if (drawerProgress == 0.0f)
+        {
+            for (size_t i = 1; i < knobs.size(); ++i)
+            {
+                knobs[i]->slider.setVisible (false);
+                knobs[i]->name.setVisible (false);
+                knobs[i]->value.setVisible (false);
+            }
+            for (size_t i = 0; i < outKnobs.size(); ++i)
+            {
+                outKnobs[i]->slider.setVisible (false);
+                outKnobs[i]->name.setVisible (false);
+                outKnobs[i]->value.setVisible (false);
+            }
+            linkButton.setVisible (false);
+            charPicker.setVisible (false);
+            presetBar.setVisible (false);
+            inBar.setVisible (false);
+            outBar.setVisible (false);
+            matchButton.setVisible (false);
+            hqButton.setVisible (false);
+        }
+
+        resized();
+        repaint();
+    }
+
     panelLayer.refreshFooter();
-
     pushVisualState();
 }
 
 //==============================================================================
-// 把音频侧的数据喂给背景层。每帧一次，只读不写，不做任何分配。
 void EZampEditor::pushVisualState()
 {
     const auto& spec = processor.getSpectrum();
@@ -411,31 +653,35 @@ void EZampEditor::pushVisualState()
     const bool fresh = (tick != lastSpecTick);
     lastSpecTick = tick;
 
-    spec.readInto (specBuf.data(), (int) specBuf.size());
-    spec.readPeaksInto (peakBuf.data(), (int) peakBuf.size());
-
-    spectrumLayer.setSpectrum (specBuf.data(), (int) specBuf.size(), fresh, peakBuf.data());
-    spectrumLayer.setEnergy (spec.getEnergy());
-    particleLayer.setEnergy (spec.getEnergy());
-
-    // 四个染色旋钮各领一色，开多大就占多大的配色权重。
-    // 加一点点底噪（*0.92 + 0.08）是为了：旋钮全关到 0 时背景不会变成死板的
-    // 四等分，而是仍然跟着旋钮的比例走。
-    const juce::String* ids[4] = { &ParamID::drive, &ParamID::weight,
-                                   &ParamID::air,   &ParamID::glue };
-    float w4[4] = {};
-
-    for (int i = 0; i < 4; ++i)
+    if (fresh)
     {
-        float v = 0.0f;
-
-        if (auto* p = processor.getAPVTS().getRawParameterValue (*ids[i]))
-            v = p->load() * 0.01f;
-
-        w4[i] = juce::jlimit (0.0f, 1.0f, v) * 0.92f + 0.08f;
+        spec.readInto      (specBuf.data(), (int) specBuf.size());
+        spec.readPeaksInto (peakBuf.data(), (int) peakBuf.size());
     }
 
+    const float d = (float) knobs[0]->slider.getValue() / 100.0f;
+    const float w = (float) knobs[1]->slider.getValue() / 100.0f;
+    const float a = (float) knobs[2]->slider.getValue() / 100.0f;
+    // 第四色保留：从现有染色参数合成视觉权重，不对应额外音频参数。
+    const float blend = d * 0.5f + w * 0.25f + a * 0.25f;
+    const float w4[4] = { d, w, a, blend };
     palette.setWeights (w4);
+
+    spectrumLayer.setSpectrum (specBuf.data(), (int) specBuf.size(), fresh, peakBuf.data());
+
+    const float energy = spec.getEnergy();
+    const float visualEnergy = juce::jmax (energy, isExpandedView ? (d * 0.35f) : (prismKnob.getValue() * 0.45f));
+    spectrumLayer.setEnergy (visualEnergy);
+    particleLayer.setEnergy (visualEnergy);
+    prismKnob.setSpectrum (specBuf.data(), (int) specBuf.size(), energy);
+
+    // Meters & Bar
+    const auto& chain = processor.getChain();
+    inBar.setLevelDb   (chain.getInputLevelDb());
+    outBar.setLevelDb  (chain.getOutputLevelDb());
+
+    inBar.tick();
+    outBar.tick();
 }
 
 } // namespace ozo

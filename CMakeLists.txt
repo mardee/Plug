@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(ozoEZamp VERSION 1.1.0 LANGUAGES C CXX)
+project(ozoPRISM VERSION 1.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -7,69 +7,69 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_subdirectory(JUCE EXCLUDE_FROM_ALL)
 
-juce_add_plugin(ozoEZamp
+juce_add_plugin(ozoPRISM
     COMPANY_NAME "ozo"
     PLUGIN_MANUFACTURER_CODE OzoA
-    PLUGIN_CODE EZmp
+    PLUGIN_CODE Prsm
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     FORMATS AU VST3 Standalone
-    PRODUCT_NAME "ozo EZamp"
-    BUNDLE_ID "cn.ozo.ezamp"
+    PRODUCT_NAME "ozo PRISM"
+    BUNDLE_ID "cn.ozo.prism"
 )
 
-juce_generate_juce_header(ozoEZamp)
+juce_generate_juce_header(ozoPRISM)
 
-# 涂鸦字体（SIL OFL 1.1，见 assets/fonts/OFL.txt）。
-# 嵌进二进制而不是依赖系统字体 —— 用户机器上没装这个字体时不能退化成宋体。
-juce_add_binary_data(ozoEZampFonts
+# 涂鸦字体（SIL OFL 1.1，见 assets/fonts/OFL.txt）
+juce_add_binary_data(ozoPRISMFonts
     SOURCES
         assets/fonts/SedgwickAveDisplay-Regular.ttf
         assets/fonts/OFL.txt
 )
 
-target_sources(ozoEZamp PRIVATE
+target_sources(ozoPRISM PRIVATE
     src/PluginProcessor.cpp
     src/PluginEditor.cpp
     src/dsp/SignalChain.cpp
     src/presets/PresetFactory.cpp
+    src/presets/UserPresets.cpp
 )
 
-target_include_directories(ozoEZamp PRIVATE src)
+target_include_directories(ozoPRISM PRIVATE src)
 
-target_compile_definitions(ozoEZamp PRIVATE
+target_compile_definitions(ozoPRISM PRIVATE
     JUCE_IGNORE_VST3_MISMATCHED_PARAMETER_ID_WARNING=1
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
 )
 
-target_link_libraries(ozoEZamp PRIVATE
+target_link_libraries(ozoPRISM PRIVATE
     juce::juce_audio_utils
     juce::juce_audio_processors
     juce::juce_dsp
     juce::juce_gui_basics
-    ozoEZampFonts
+    ozoPRISMFonts
 )
 
 # -----------------------------------------------------------------------------
 # 离线 DSP 验证：直接跑 SignalChain，不依赖插件宿主
 # -----------------------------------------------------------------------------
-juce_add_console_app(ozoEZampTests
-    PRODUCT_NAME "ozoEZampTests"
+juce_add_console_app(ozoPRISMTests
+    PRODUCT_NAME "ozoPRISMTests"
 )
 
-target_sources(ozoEZampTests PRIVATE
+target_sources(ozoPRISMTests PRIVATE
     tests/dsp_tests.cpp
     src/dsp/SignalChain.cpp
 )
 
-target_include_directories(ozoEZampTests PRIVATE src)
+target_include_directories(ozoPRISMTests PRIVATE src)
 
-target_link_libraries(ozoEZampTests PRIVATE
+target_link_libraries(ozoPRISMTests PRIVATE
     juce::juce_audio_basics
     juce::juce_core
     juce::juce_dsp
@@ -78,21 +78,53 @@ target_link_libraries(ozoEZampTests PRIVATE
 # -----------------------------------------------------------------------------
 # VST3 宿主诊断：加载已安装的 .vst3，跑一段音频，确认插件真的在处理
 # -----------------------------------------------------------------------------
-juce_add_console_app(ozoEZampVST3Host
-    PRODUCT_NAME "ozoEZampVST3Host"
+juce_add_console_app(ozoPRISMVST3Host
+    PRODUCT_NAME "ozoPRISMVST3Host"
 )
 
-target_sources(ozoEZampVST3Host PRIVATE
+target_sources(ozoPRISMVST3Host PRIVATE
     tests/vst3_host_test.cpp
 )
 
-target_link_libraries(ozoEZampVST3Host PRIVATE
+target_link_libraries(ozoPRISMVST3Host PRIVATE
     juce::juce_audio_basics
     juce::juce_audio_formats
     juce::juce_core
     juce::juce_audio_processors_headless
 )
 
-target_compile_definitions(ozoEZampVST3Host PRIVATE
+target_compile_definitions(ozoPRISMVST3Host PRIVATE
     JUCE_PLUGINHOST_VST3=1
+)
+
+# -----------------------------------------------------------------------------
+# 离线 UI 渲染截图工具
+# -----------------------------------------------------------------------------
+juce_add_console_app(ozoPRISMSnapshot
+    PRODUCT_NAME "ozoPRISMSnapshot"
+)
+
+target_sources(ozoPRISMSnapshot PRIVATE
+    tests/render_snapshots.cpp
+    src/PluginProcessor.cpp
+    src/PluginEditor.cpp
+    src/dsp/SignalChain.cpp
+    src/presets/PresetFactory.cpp
+    src/presets/UserPresets.cpp
+)
+
+target_include_directories(ozoPRISMSnapshot PRIVATE src)
+
+target_compile_definitions(ozoPRISMSnapshot PRIVATE
+    JUCE_IGNORE_VST3_MISMATCHED_PARAMETER_ID_WARNING=1
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)
+
+target_link_libraries(ozoPRISMSnapshot PRIVATE
+    juce::juce_audio_utils
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_gui_basics
+    ozoPRISMFonts
 )

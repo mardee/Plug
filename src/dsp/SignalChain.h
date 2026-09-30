@@ -7,7 +7,7 @@ namespace ozo
 {
 
 //==============================================================================
-// 高层参数。UI 只跟这 9 个数打交道，内部怎么分配给各级由 SignalChain 决定。
+// 高层参数。UI 只跟这些参数打交道，内部怎么分配给各级由 SignalChain 决定。
 struct ChainParams
 {
     float     inputDb   = 0.0f;
@@ -15,7 +15,6 @@ struct ChainParams
     Character character = Character::Tape;
     float     weight    = 0.40f;   // 0..1  低频厚度
     float     air       = 0.35f;   // 0..1  高频空气
-    float     glue      = 0.30f;   // 0..1  总线压缩量
     float     outputDb  = 0.0f;
     float     mix       = 1.0f;    // 0..1  平行混合（只在最终输出做一次）
     bool      autoMatch = true;    // bypass 电平匹配
@@ -26,11 +25,10 @@ struct ChainParams
 //==============================================================================
 // SignalChain
 //
-// 相比上一版的四个关键改变：
+// 信号处理：
 //  1. 所有非线性（饱和）都在 4x 过采样下计算 → 谐波不会折叠回可听频段
 //  2. 饱和改为非对称 → 真的有偶次谐波 → 真的会"暖"
-//  3. 压缩器在线性域做包络检测 → 它终于真的会压缩
-//  4. Auto Match：实时把输出响度追平输入 → bypass A/B 不再有音量跳变
+//  3. Auto Match：实时把输出响度追平输入 → bypass A/B 不再有音量跳变
 class SignalChain
 {
 public:
@@ -45,7 +43,6 @@ public:
     const ChainParams& getParams() const noexcept { return params; }
 
     // UI 数据
-    float getGainReductionDb() const noexcept { return grDbForMeter; }
     float getInputLevelDb()    const noexcept { return inputLevelDb; }
     float getOutputLevelDb()   const noexcept { return outputLevelDb; }
     float getMatchGainDb()     const noexcept { return matchGainDb; }
@@ -63,7 +60,6 @@ private:
     FoldStage   fold;      // 狂野模式专属（常规模式下 setParams(0,0) 直接直通）
     TapeStage   tape;
     ToneStage   tone;
-    CompStage   comp;
     GritStage   grit;      // 狂野模式专属：毛刺/不规则噪声（常规模式直通）
     OutputStage output;
 
@@ -78,6 +74,15 @@ private:
     // 大小在 prepare() 里按 maxBlock 一次性分好，process() 里绝不增长 ——
     // 音频线程里 setSize 是分配，宿主塞来超长缓冲时会在实时线程里 malloc。
     juce::AudioBuffer<float> dryBuffer;
+
+    // 干信号的延迟对齐要跨块。过采样滤波器的延迟有一百多个采样，
+    // 只在当前块内回退的话，每个块的开头那一段拿不到上一块的尾巴，
+    // 读出来是 0。mix 不是 0 也不是 1 时，这段静音按比例混进输出，
+    // 每块一次，听起来就是持续的爆点。
+    // 长度按最大延迟一次性分好，process() 里只移动写指针。
+    static constexpr int kMaxLatency = 4096;
+    float dryDelay[kMaxChannels][kMaxLatency] {};
+    int   dryWrite = 0;
 
     // Auto Match
     LoudnessTracker tracker;
@@ -108,16 +113,16 @@ private:
     //
     // 宿主自动化和旋钮拖动都是块边界跳变：drive 从 0.3 跳到 1.0，
     // 预增益从 2.8x 跳到 21x，交接处就是一个 click。这里把 drive / weight /
-    // air / glue 四个连续量按约 25 ms 追到目标值，每个音频块推进一步，
+    // air 三个连续量按约 25 ms 追到目标值，每个音频块推进一步，
     // 然后拿平滑后的值去 setParams。
     //
-    // 只平滑这四个。character 是离散档位，平滑没有意义；wild 是模式开关，
+    // 只平滑这三个。character 是离散档位，平滑没有意义；wild 是模式开关，
     // 它改变的是算法结构而不是一个数，下面单独做交叉淡化。
-    float smDrive = 0.35f, smWeight = 0.40f, smAir = 0.35f, smGlue = 0.30f;
+    float smDrive = 0.35f, smWeight = 0.40f, smAir = 0.35f;
     bool  smoothInit = false;
 
     // 狂野模式交叉淡化。0 = 完全常规，1 = 完全狂野。
-    // 直接切换会在一个采样点上把折叠、次八度、毛刺、压缩比全部切过去，
+    // 直接切换会在一个采样点上把折叠、次八度、毛刺全部切过去，
     // 必然 click。两条链不能并行跑（状态会分叉），所以用一个 0..1 的
     // 渐变量去缩放那些"只有狂野才有"的级，约 40 ms 走完。
     float wildMix = 0.0f;
@@ -130,7 +135,6 @@ private:
     static constexpr float kSoftRange  = 0.122018454f;   // 1 dB
 
     // 表头数据
-    float grDbForMeter  = 0.0f;
     float inputLevelDb  = -100.0f;
     float outputLevelDb = -100.0f;
 

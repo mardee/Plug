@@ -1,0 +1,89 @@
+======================================================================
+                     ozo PRISM - 插件安装说明
+======================================================================
+
+感谢使用 ozo PRISM 音频插件！
+本插件支持 VST3、AU (仅 macOS) 和 Standalone 独立应用程序。
+请根据您的操作系统（Windows / macOS）按照以下步骤进行安装。
+
+----------------------------------------------------------------------
+一、 macOS 安装指南
+----------------------------------------------------------------------
+
+1. 文件格式说明：
+   - ozo PRISM.component  -> AU 格式（Logic Pro、GarageBand 等使用）
+   - ozo PRISM.vst3       -> VST3 格式（Cubase、FL Studio、Ableton Live、Reaper 等使用）
+   - ozo PRISM.app        -> 独立运行版（无需宿主软件即可直接打开）
+
+2. 安装路径（请将对应的文件复制到以下系统目录）：
+   
+   【AU 格式】
+   复制 `ozo PRISM.component` 到：
+   /Library/Audio/Plug-Ins/Components/
+   （或者个人目录：~/Library/Audio/Plug-Ins/Components/）
+
+   【VST3 格式】
+   复制 `ozo PRISM.vst3` 到：
+   /Library/Audio/Plug-Ins/VST3/
+   （或者个人目录：~/Library/Audio/Plug-Ins/VST3/）
+
+   【独立运行版】
+   将 `ozo PRISM.app` 直接拖入「应用程序（Applications）」文件夹即可。
+
+   * 提示：快速进入上述目录的方法：在 Finder（访达）中按快捷键 `Command + Shift + G`，输入上述路径并回车。
+
+3. macOS 首次打开权限提示（Gatekeeper 提示“无法打开/未验证开发者”时）：
+   - 打开「系统设置（System Settings）」->「隐私与安全性（Privacy & Security）」。
+   - 滑动到底部，在安全性提示处点击「仍要打开（Open Anyway）」。
+   - 或者在终端（Terminal）中运行以下命令清除隔离属性：
+     sudo xattr -cr /Library/Audio/Plug-Ins/Components/ozo\ PRISM.component
+     sudo xattr -cr /Library/Audio/Plug-Ins/VST3/ozo\ PRISM.vst3
+
+4. 刷新插件缓存：
+   - 打开宿主 DAW（如 Logic Pro / Ableton Live / Cubase / FL Studio）。
+   - 进入宿主的插件管理器执行 Rescan（重新扫描插件），即可在效果器列表中找到 `ozo / ozo PRISM`。
+
+
+----------------------------------------------------------------------
+二、 Windows 安装指南
+----------------------------------------------------------------------
+
+1. 文件格式说明：
+   - ozo PRISM.vst3       -> VST3 格式（适用于各大主流 DAW）
+   - ozo PRISM.exe        -> 独立运行版（无需宿主软件）
+
+2. 安装路径：
+
+   【VST3 格式】
+   请将 `ozo PRISM.vst3`（或包含该文件的文件夹）复制到以下 Windows 标准 VST3 目录：
+   C:\Program Files\Common Files\VST3\
+
+   * 注意：如果您的系统或宿主设置为 32 位（较少见），请放置在：
+     C:\Program Files (x86)\Common Files\VST3\
+
+   【独立运行版】
+   将 `ozo PRISM.exe` 放置在任意常用目录（如桌面或安装目录），双击即可运行。
+
+3. 刷新插件缓存：
+   - 打开您的 DAW 宿主软件（如 FL Studio、Cubase、Studio One、Reaper 等）。
+   - 打开宿主设置中的「插件管理器（Plugin Manager）」，点击「扫描 / Rescan」。
+   - 扫描完成后，在效果器栏目中搜索 `ozo PRISM` 即可加载使用。
+
+
+----------------------------------------------------------------------
+三、 常见问题排查 (FAQ)
+----------------------------------------------------------------------
+
+Q1: 扫描后在 DAW 里找不到插件？
+A1: 
+1. 请确认插件文件已放置在上述标准路径中，且文件扩展名正确。
+2. 重启 DAW 并在插件管理器中勾选 "Rescan Failed Plugins"（重新扫描失败的插件）或清除插件缓存重新扫描。
+3. 如果是 Logic Pro，请在「Plug-in Manager」中找到 ozo PRISM，勾选复选框或点击「Reset & Rescan Selection」。
+
+Q2: 打开插件提示缺少运行时组件（Windows）？
+A2: 
+请确保已安装微软官方的 Microsoft Visual C++ 2015-2022 Redistributable (x64)。
+
+======================================================================
+祝您创作愉快！
+======================================================================

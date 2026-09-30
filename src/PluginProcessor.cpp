@@ -11,8 +11,7 @@ EZampProcessor::EZampProcessor()
                         .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
-    // 默认值 = Color 预设（中间档，挂上就能听出过了设备，又不至于一上来就糊）
-    currentPreset = 2;
+    userPresets.refresh();
 }
 
 EZampProcessor::~EZampProcessor() {}
@@ -53,10 +52,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout EZampProcessor::createParame
 
     params.push_back (std::make_unique<APF> (
         juce::ParameterID { ParamID::air, 1 }, "Air", pctRange(), 45.0f,
-        AttrsF().withLabel ("%")));
-
-    params.push_back (std::make_unique<APF> (
-        juce::ParameterID { ParamID::glue, 1 }, "Glue", pctRange(), 35.0f,
         AttrsF().withLabel ("%")));
 
     params.push_back (std::make_unique<APF> (
@@ -136,7 +131,6 @@ void EZampProcessor::syncParamsFromAPVTS()
     auto* vChar   = apvts.getRawParameterValue (ParamID::character);
     auto* vWeight = apvts.getRawParameterValue (ParamID::weight);
     auto* vAir    = apvts.getRawParameterValue (ParamID::air);
-    auto* vGlue   = apvts.getRawParameterValue (ParamID::glue);
     auto* vOutput = apvts.getRawParameterValue (ParamID::output);
     auto* vMix    = apvts.getRawParameterValue (ParamID::mix);
     auto* vMatch  = apvts.getRawParameterValue (ParamID::match);
@@ -149,7 +143,6 @@ void EZampProcessor::syncParamsFromAPVTS()
     p.character = (Character) juce::jlimit (0, 2, (int) std::lround (vChar->load()));
     p.weight    = vWeight->load() * 0.01f;
     p.air       = vAir->load()    * 0.01f;
-    p.glue      = vGlue->load()   * 0.01f;
     p.outputDb  = vOutput->load();
     p.mix       = vMix->load()    * 0.01f;
     p.autoMatch = vMatch->load() > 0.5f;
@@ -162,8 +155,18 @@ void EZampProcessor::syncParamsFromAPVTS()
 //==============================================================================
 void EZampProcessor::applyPreset (int index)
 {
-    currentPreset = juce::jlimit (0, getNumPrograms() - 1, index);
-    const Preset& p = PresetFactory::get (currentPreset);
+    // 出厂预设在前，用户预设紧随其后
+    ChainParams params;
+    const int userIndex = index - PresetFactory::kFactoryCount;
+
+    if (index >= 0 && index < PresetFactory::kFactoryCount)
+        PresetFactory::applyToParams (index, params);
+    else if (userIndex >= 0 && userIndex < userPresets.size())
+        params = userPresets.get (userIndex).params;
+    else
+        return;
+
+    currentPreset.store (index);
 
     auto set = [this] (const juce::String& id, float v)
     {
@@ -171,16 +174,64 @@ void EZampProcessor::applyPreset (int index)
             param->setValueNotifyingHost (param->convertTo0to1 (v));
     };
 
-    set (ParamID::input,     p.inputDb);
-    set (ParamID::drive,     p.drive     * 100.0f);
-    set (ParamID::character, (float) (int) p.character);
-    set (ParamID::weight,    p.weight    * 100.0f);
-    set (ParamID::air,       p.air       * 100.0f);
-    set (ParamID::glue,      p.glue      * 100.0f);
-    set (ParamID::output,    p.outputDb);
-    set (ParamID::mix,       p.mix       * 100.0f);
-    set (ParamID::match,     p.autoMatch ? 1.0f : 0.0f);
-    set (ParamID::hq,        p.hq        ? 1.0f : 0.0f);
+    set (ParamID::input,     params.inputDb);
+    set (ParamID::drive,     params.drive     * 100.0f);
+    set (ParamID::character, (float) (int) params.character);
+    set (ParamID::weight,    params.weight    * 100.0f);
+    set (ParamID::air,       params.air       * 100.0f);
+    set (ParamID::output,    params.outputDb);
+    set (ParamID::mix,       params.mix       * 100.0f);
+    set (ParamID::match,     params.autoMatch ? 1.0f : 0.0f);
+    set (ParamID::hq,        params.hq        ? 1.0f : 0.0f);
+    set (ParamID::wild,      params.wild      ? 1.0f : 0.0f);
+}
+
+ChainParams EZampProcessor::captureParams() const
+{
+    // 从 APVTS 读，而不是从 SignalChain 读：平滑还没走完时链里的值是旧的。
+    auto raw = [this] (const juce::String& id, float fallback)
+    {
+        auto* p = apvts.getRawParameterValue (id);
+        return p != nullptr ? p->load() : fallback;
+    };
+
+    ChainParams params;
+    params.inputDb   = raw (ParamID::input,  0.0f);
+    params.drive     = raw (ParamID::drive,  35.0f) * 0.01f;
+    params.weight    = raw (ParamID::weight, 40.0f) * 0.01f;
+    params.air       = raw (ParamID::air,    35.0f) * 0.01f;
+    params.outputDb  = raw (ParamID::output, 0.0f);
+    params.mix       = raw (ParamID::mix,    100.0f) * 0.01f;
+    params.autoMatch = raw (ParamID::match,  1.0f) > 0.5f;
+    params.hq        = raw (ParamID::hq,     1.0f) > 0.5f;
+    params.wild      = raw (ParamID::wild,   0.0f) > 0.5f;
+    params.character = (Character) juce::jlimit (0, 2, (int) std::lround (raw (ParamID::character, 0.0f)));
+
+    return params;
+}
+
+bool EZampProcessor::saveUserPreset (const juce::String& name)
+{
+    if (! userPresets.save (name, captureParams()))
+        return false;
+
+    // 存完即选中，这样预设条立刻显示这个名字
+    const int idx = userPresets.indexOfName (name);
+    if (idx >= 0)
+        currentPreset.store (PresetFactory::kFactoryCount + idx);
+
+    return true;
+}
+
+bool EZampProcessor::deleteUserPreset (int index)
+{
+    const int userIndex = index - PresetFactory::kFactoryCount;
+
+    if (! userPresets.remove (userIndex))
+        return false;
+
+    currentPreset.store (-1);
+    return true;
 }
 
 //==============================================================================
@@ -198,7 +249,7 @@ const juce::String EZampProcessor::getProgramName (int index)
 void EZampProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
-    state.setProperty ("presetIndex", currentPreset, nullptr);
+    state.setProperty ("presetIndex", currentPreset.load(), nullptr);
 
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
@@ -215,8 +266,19 @@ void EZampProcessor::setStateInformation (const void* data, int sizeInBytes)
         return;
 
     if (state.hasProperty ("presetIndex"))
-        currentPreset = juce::jlimit (0, getNumPrograms() - 1,
-                                      (int) state.getProperty ("presetIndex"));
+    {
+        const int idx = (int) state.getProperty ("presetIndex");
+
+        // 用户预设的下标跨会话不稳定（别人的电脑上没有这些文件），
+        // 所以只恢复出厂预设的选中态，其余一律当作"手动调过"。
+        currentPreset.store ((idx >= 0 && idx < PresetFactory::kFactoryCount) ? idx : -1);
+    }
+
+    // Strip the retired parameter from old sessions without changing surviving IDs.
+    state.removeProperty ("glue", nullptr);
+    for (int i = state.getNumChildren(); --i >= 0;)
+        if (state.getChild (i).getProperty ("id").toString() == "glue")
+            state.removeChild (i, nullptr);
 
     apvts.replaceState (state);
 }

@@ -29,8 +29,8 @@ namespace OzoCol
     inline juce::Colour mint       { 0xFF7FE3D4 };
     inline juce::Colour peach      { 0xFFFFC98B };
 
-    // 四色主题 —— 四个染色旋钮各占一个，顺序固定：
-    //   0 亮粉 = Drive   1 薰衣草 = Weight   2 薄荷 = Air   3 蜜桃 = Glue
+    // 四色主题 —— 三个染色旋钮与一份合成视觉权重，顺序固定：
+    //   0 亮粉 = Drive   1 薰衣草 = Weight   2 薄荷 = Air   3 蜜桃 = 合成染色
     // 背景的频谱与粒子也用同一套，旋钮开多大，对应色就在背景上占多大。
     inline juce::Colour tint[4] = { pink, lavender, mint, peach };
 
@@ -103,28 +103,28 @@ namespace OzoCol
         }
         else
         {
-            bg = juce::Colour (0xFF0A0710); bgTop = juce::Colour (0xFF1C1026); panel = juce::Colour (0xCC16101E);
-            panelEdge = juce::Colour (0xFF3A2438); panelInner = juce::Colour (0xFF1E1426); popupBg = juce::Colour (0xFF1A1224);
+            bg = juce::Colour (0xFF0D060C); bgTop = juce::Colour (0xFF240A1D); panel = juce::Colour (0xCC1A0B18);
+            panelEdge = juce::Colour (0xFF4A1A35); panelInner = juce::Colour (0xFF260F22); popupBg = juce::Colour (0xFF200C1B);
 
-            text = juce::Colour (0xFFFFF2F8); textDim = juce::Colour (0xFFBCA9CE); textFaint = juce::Colour (0xFF7C6A8E);
+            text = juce::Colour (0xFFFFF2F8); textDim = juce::Colour (0xFFD6A8C8); textFaint = juce::Colour (0xFF9A6082);
 
-            pink = juce::Colour (0xFFFF2A3F); lavender = juce::Colour (0xFFB429FF);
-            mint = juce::Colour (0xFF00E9FF); peach    = juce::Colour (0xFFFF9500);
+            pink = juce::Colour (0xFFFF2655); lavender = juce::Colour (0xFFD62BFF);
+            mint = juce::Colour (0xFF00E9FF); peach    = juce::Colour (0xFFFF4D75);
 
-            // 深底上反过来，文字要提亮
-            tintText[0] = juce::Colour (0xFFFF6B7A); tintText[1] = juce::Colour (0xFFCE6BFF);
-            tintText[2] = juce::Colour (0xFF5CF0FF); tintText[3] = juce::Colour (0xFFFFB43D);
+            // 深底上反过来，文字要提亮（更多红色与亮紫色）
+            tintText[0] = juce::Colour (0xFFFF5278); tintText[1] = juce::Colour (0xFFE855FF);
+            tintText[2] = juce::Colour (0xFF5CF0FF); tintText[3] = juce::Colour (0xFFFF6B90);
 
-            accent = juce::Colour (0xFFFF2A3F); accentDim = juce::Colour (0xFF7A1626);
-            accent2 = juce::Colour (0xFF00E9FF); accentText = juce::Colour (0xFFFF6B7A);
+            accent = juce::Colour (0xFFFF2655); accentDim = juce::Colour (0xFF80142C);
+            accent2 = juce::Colour (0xFFD62BFF); accentText = juce::Colour (0xFFFF5278);
 
-            track = juce::Colour (0xFF2A1E33); knobFace = juce::Colour (0xFF241A2C); knobFace2 = juce::Colour (0xFF160F1D);
-            knobEdge = juce::Colour (0xFF4A3358); knobShadow = juce::Colour (0x50000000);
+            track = juce::Colour (0xFF331626); knobFace = juce::Colour (0xFF261220); knobFace2 = juce::Colour (0xFF180A14);
+            knobEdge = juce::Colour (0xFF582040); knobShadow = juce::Colour (0x50000000);
             sheenTop = juce::Colour (0x0EFFFFFF); btnHi2 = juce::Colour (0x1AFFFFFF);
 
-            btnBg = juce::Colour (0xD9201729); btnHi = juce::Colour (0xD9302139); btnOnText = juce::Colour (0xFF120A16);
+            btnBg = juce::Colour (0xD9261222); btnHi = juce::Colour (0xD93C1834); btnOnText = juce::Colour (0xFF140810);
 
-            meterGreen = juce::Colour (0xFF00E9FF); meterAmber = juce::Colour (0xFFFF9500); meterRed = juce::Colour (0xFFFF2A3F);
+            meterGreen = juce::Colour (0xFF00E9FF); meterAmber = juce::Colour (0xFFFF4D75); meterRed = juce::Colour (0xFFFF2655);
         }
 
         // 四色主题数组必须在这里重填：绘制代码读的是 tint[]，不是 pink/lavender 本身
@@ -155,7 +155,7 @@ namespace OzoCol
 
     //--------------------------------------------------------------------------
     // 单主题色的渐变：同色由深到浅。
-    // 旋钮归属某一色之后就不能再用四色全息了 —— 那样四个旋钮会长得一模一样，
+    // 旋钮归属某一色之后就不能再用四色全息了 —— 那样三个旋钮会长得一模一样，
     // 看不出谁是谁。同色系渐变既保留光泽，又守住了色彩身份。
     inline juce::ColourGradient tintGlow (const juce::Colour& c,
                                           juce::Rectangle<float> area,

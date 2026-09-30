@@ -27,7 +27,40 @@ void SignalChain::rebuildOversampler (double sr, int blockSize, int numCh)
         true);
 
     oversampler->initProcessing ((size_t) juce::jmax (1, blockSize));
-    latencySamples = (int) oversampler->getLatencyInSamples();
+
+    // getLatencyInSamples() 只报降采样那一半。升采样的群延迟它在内部用
+    // 整数延迟补齐了，不计入这个数。干湿混合要对齐的是整条往返的延迟，
+    // 只用这一半会让湿信号始终晚一截，mix 不满 100% 时梳状滤波，听着像爆音。
+    // 所以这里用一个冲激实测往返峰值的位置，那才是真延迟。
+    {
+        // 冲激放在第一块的开头，连续跑两块。只跑一块会截断：升采样的群延迟
+        // 有一百多个采样，冲激的尾巴要到下一块才从降采样里出来。
+        const int probeLen = juce::jmax (blockSize, 256);
+        juce::AudioBuffer<float> probe (1, probeLen);
+
+        int peakPos = 0;
+        float peak = 0.0f;
+
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            probe.clear();
+            if (pass == 0)
+                probe.setSample (0, 0, 1.0f);
+
+            juce::dsp::AudioBlock<float> probeBlock (probe);
+            oversampler->processSamplesUp (probeBlock);
+            oversampler->processSamplesDown (probeBlock);
+
+            for (int i = 0; i < probeLen; ++i)
+            {
+                const float a = std::abs (probe.getSample (0, i));
+                if (a > peak) { peak = a; peakPos = pass * probeLen + i; }
+            }
+        }
+
+        latencySamples = peakPos;
+        oversampler->reset();
+    }
 }
 
 void SignalChain::prepare (double sr, int blockSize, int numCh)
@@ -40,7 +73,6 @@ void SignalChain::prepare (double sr, int blockSize, int numCh)
     fold.prepare   (osRate);
     tape.prepare   (osRate);
     tone.prepare   (osRate);
-    comp.prepare   (osRate);
     grit.prepare   (osRate);
     output.prepare (osRate);
 
@@ -71,7 +103,6 @@ void SignalChain::reset()
     fold.reset();
     tape.reset();
     tone.reset();
-    comp.reset();
     grit.reset();
     output.reset();
     tracker.reset();
@@ -81,9 +112,10 @@ void SignalChain::reset()
         kOutHP[c].reset(); kOutLP[c].reset();
     }
     dryBuffer.clear();
+    std::fill (&dryDelay[0][0], &dryDelay[0][0] + kMaxChannels * kMaxLatency, 0.0f);
+    dryWrite = 0;
     matchGainDb = 0.0f;
     smoothedMatchDb = 0.0f;
-    grDbForMeter = 0.0f;
     inputLevelDb = outputLevelDb = -100.0f;
 
     // 平滑状态清掉后立刻对齐到当前参数。不能在这里调 applyParams()：
@@ -91,7 +123,7 @@ void SignalChain::reset()
     // 会把各级用错误的参数重算一遍。
     smoothInit = false;
     smDrive = params.drive;  smWeight = params.weight;
-    smAir   = params.air;    smGlue   = params.glue;
+    smAir   = params.air;
     wildMix = params.wild ? 1.0f : 0.0f;
     smoothInit = true;
 
@@ -111,7 +143,6 @@ namespace
             && a.character == b.character
             && a.weight    == b.weight
             && a.air       == b.air
-            && a.glue      == b.glue
             && a.outputDb  == b.outputDb
             && a.mix       == b.mix
             && a.autoMatch == b.autoMatch
@@ -127,7 +158,7 @@ void SignalChain::advanceSmoothing() noexcept
     if (! smoothInit)
     {
         smDrive = params.drive;  smWeight = params.weight;
-        smAir   = params.air;    smGlue   = params.glue;
+        smAir   = params.air;
         wildMix = params.wild ? 1.0f : 0.0f;
         smoothInit = true;
         return;
@@ -143,7 +174,6 @@ void SignalChain::advanceSmoothing() noexcept
     smDrive  += (params.drive  - smDrive)  * coef;
     smWeight += (params.weight - smWeight) * coef;
     smAir    += (params.air    - smAir)    * coef;
-    smGlue   += (params.glue   - smGlue)   * coef;
 
     const float wildTarget = params.wild ? 1.0f : 0.0f;
     const float wildCoef   = 1.0f - std::exp (-blockSec / 0.040f);
@@ -155,7 +185,7 @@ void SignalChain::advanceSmoothing() noexcept
         if (std::abs (v - target) < 1.0e-4f) v = target;
     };
     snap (smDrive, params.drive);   snap (smWeight, params.weight);
-    snap (smAir,   params.air);     snap (smGlue,   params.glue);
+    snap (smAir,   params.air);
     if (std::abs (wildMix - wildTarget) < 1.0e-3f) wildMix = wildTarget;
 
     // 不在这里调 applyParams()。各级系数只在 setParams() 里重算一次。
@@ -177,7 +207,7 @@ void SignalChain::setParams (const ChainParams& p)
     // 先把平滑值对齐到新参数，再重算各级。否则 applyParams() 读到的
     // 还是上一次的平滑值，新参数被旧值覆盖，要等下一块才纠正过来。
     smDrive = params.drive;  smWeight = params.weight;
-    smAir   = params.air;    smGlue   = params.glue;
+    smAir   = params.air;
     wildMix = params.wild ? 1.0f : 0.0f;
     smoothInit = true;
 
@@ -189,7 +219,6 @@ void SignalChain::setParams (const ChainParams& p)
         fold.prepare   (osRate);
         tape.prepare   (osRate);
         tone.prepare   (osRate);
-        comp.prepare   (osRate);
         grit.prepare   (osRate);
         output.prepare (osRate);
     }
@@ -206,7 +235,7 @@ void SignalChain::applyParams()
     // 目标值（实测 bypass 偏差因此从 0.3 dB 涨到 1.5 dB）。
     // 推进在 process() 里每块做一次，见 advanceSmoothing()。
 
-    // 0.5 处分界：曲线形态（压缩比、attack、预增益档位）在这里切换。
+    // 0.5 处分界：曲线形态（预增益档位）在这里切换。
     // 连续量已经在平滑，所以切换点前后的增益差很小，听不出接缝。
     // 用平滑后的值而不是原始参数。advanceSmoothing() 每块把它们往目标推一步，
     // 推完才调用这里，所以各级看到的是连续变化而不是块边界上的跳变。
@@ -243,23 +272,10 @@ void SignalChain::applyParams()
                     profile.lowShelfHz, profile.highShelfHz, profile.airScale,
                     profile.weightScale);
 
-    // glue 同时压低阈值、加大压缩比：0 = 几乎不压，1 = 明显的总线 glue。
-    // 狂野档的加成（阈值 −6 dB、压缩比 ×3.5、attack ×0.45）按 wm 渐变。
-    const float threshDb = -16.0f - smGlue * 14.0f - 6.0f * wm;
-    const float wildBoost = 1.0f + 2.5f * wm;          // 1 → 3.5
-    const float ratio    = profile.compRatio * (0.6f + smGlue * 0.9f) * wildBoost;
-    const float atkScale = 1.0f - 0.55f * wm;          // 1 → 0.45
-    const float relScale = 1.0f - 0.40f * wm;          // 1 → 0.60
-    const float kneeDb   = 8.0f - 4.0f * wm;           // 8 → 4
-    comp.setParams (threshDb, ratio, kneeDb,
-                    profile.compAttackMs * atkScale,
-                    profile.compReleaseMs * relScale, 1.0f);
-
-    // 输出级：常态 0.3 起，狂野起点抬到 0.55，都跟着 glue 走
+    // 输出变压器保留各模式的基础染色，不再由压缩参数驱动。
     const float outBase = 0.30f + 0.25f * wm;
-    const float outGlue = 0.85f + 0.15f * wm;
     const float outAsym = 0.6f  + 0.3f  * wm;
-    output.setParams (outBase + smGlue * outGlue, profile.asymmetry * outAsym);
+    output.setParams (outBase, profile.asymmetry * outAsym);
 
     // 折叠、次八度、毛刺只在狂野模式有意义。用 wm 缩放而不是硬切，
     // 这样开关时它们是渐入渐出的，不会在一个采样点上突然出现。
@@ -272,14 +288,12 @@ void SignalChain::applyParams()
 }
 
 //==============================================================================
-// 五级串在过采样域里跑。压缩器需要跨通道取最大值做立体声联动，
-// 所以按采样点推进而不是整块处理。
+// 染色链在过采样域里按采样点推进，各通道独立处理。
 static void runChainOnBlock (juce::dsp::AudioBlock<float>& block,
                              PreampStage& preamp,
                              FoldStage&   fold,
                              TapeStage&   tape,
                              ToneStage&   tone,
-                             CompStage&   comp,
                              GritStage&   grit,
                              OutputStage& output)
 {
@@ -299,24 +313,6 @@ static void runChainOnBlock (juce::dsp::AudioBlock<float>& block,
             s = fold.processSample   (c, s);   // 狂野模式的折叠 + 次八度；常规模式直通
             s = tape.processSample   (c, s);
             s = tone.processSample   (c, s);
-            block.setSample (c, i, s);
-        }
-
-        // 立体声联动：取所有通道的最大绝对值
-        float peak = 0.0f;
-        for (int c = 0; c < ch; ++c)
-        {
-            const float a = std::abs (block.getSample (c, i));
-            if (a > peak) peak = a;
-        }
-
-        const float g = comp.computeGain (peak);
-
-        for (int c = 0; c < ch; ++c)
-        {
-            float s = block.getSample (c, i) * g;
-            // 毛刺放在压缩之后、输出饱和之前：
-            // 放在压缩之前会被压平（正是用户抱怨的"扁"），放这里毛刺原样保留。
             s = grit.processSample   (c, s);
             s = output.processSample (c, s);
             block.setSample (c, i, s);
@@ -400,19 +396,35 @@ void SignalChain::process (juce::AudioBuffer<float>& buffer)
     for (int c = 0; c < chans; ++c)
         dryBuffer.copyFrom (c, 0, buffer, c, 0, n);
 
+    // 干信号同时推进延迟线，供后面按过采样延迟取用。
+    // 写指针是所有通道共用的，所以只在最后推进一次。
+    {
+        int w = dryWrite;
+        const int nc = juce::jmin (chans, kMaxChannels);
+
+        for (int i = 0; i < n; ++i)
+        {
+            for (int c = 0; c < nc; ++c)
+                dryDelay[c][w] = buffer.getSample (c, i);
+
+            if (++w >= kMaxLatency) w = 0;
+        }
+
+        dryWrite = w;
+    }
+
     inputLevelDb = gainToDb (inRms);
 
     // ---------------------------------------------------------------------
-    // 2. 升采样 → 五级染色 → 降采样
+    // 2. 升采样 → 染色链 → 降采样
     // ---------------------------------------------------------------------
     juce::dsp::AudioBlock<float> block (buffer);
     auto upBlock = oversampler->processSamplesUp (block);
 
-    runChainOnBlock (upBlock, preamp, fold, tape, tone, comp, grit, output);
+    runChainOnBlock (upBlock, preamp, fold, tape, tone, grit, output);
 
     oversampler->processSamplesDown (block);
 
-    grDbForMeter = comp.getGainReductionDb();
 
     // ---------------------------------------------------------------------
     // 3. Auto Match —— 把输出响度实时追平输入
@@ -459,23 +471,32 @@ void SignalChain::process (juce::AudioBuffer<float>& buffer)
 
     float outSum = 0.0f;
 
-    for (int c = 0; c < chans; ++c)
+    // 延迟线的写指针此刻已经停在"下一块的起点"。当前块第 i 个采样
+    // 对应的延迟读位置要倒推回去：块尾是 dryWrite-1，块头再往前 n-1。
+    const int nc = juce::jmin (chans, kMaxChannels);
+
+    for (int c = 0; c < nc; ++c)
     {
-        float* d   = buffer.getWritePointer (c);
-        const float* dry = dryBuffer.getReadPointer (c);
+        float* d = buffer.getWritePointer (c);
 
         for (int i = 0; i < n; ++i)
         {
             // 增益放在响度测量之后，否则补偿会把上一块加上的增益再算一遍。
             // 软限阈值内严格直通，只有超过 0 dBFS 才进 tanh，
             // 所以正常电平下不产生谐波、不改变响度。
-            // 干信号按过采样延迟对齐，否则 mix 不全干不全湿时会梳状滤波。
             float wet = d[i] * totalGain;
             const float aw = std::abs (wet);
             if (aw > kCeilingLin)
                 wet = std::copysign (kCeilingLin + kSoftRange * std::tanh ((aw - kCeilingLin) / kSoftRange), wet);
-            const float dryS = (i >= lat) ? dry[i - lat] : 0.0f;
-            d[i] = dryS * mixDry + wet * mixWet;
+
+            // 干信号从跨块延迟线里取，落后湿信号 lat 个采样。
+            // 之前是在当前块内回退，块头那 lat 个采样读到的是 0，
+            // mix 不满 100% 时每块开头都混进一段静音。
+            int r = dryWrite - n + i - lat;
+            r %= kMaxLatency;
+            if (r < 0) r += kMaxLatency;
+
+            d[i] = dryDelay[c][r] * mixDry + wet * mixWet;
         }
 
         outSum = juce::jmax (outSum, buffer.getRMSLevel (c, 0, n));
