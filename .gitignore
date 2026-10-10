@@ -1,5 +1,6 @@
 # 编译产物（cmake 重新生成）
 /build/
+/release/
 
 # JUCE 框架本体（9.0.2，第三方代码，不纳入本仓库历史）
 # 重新获取：git clone --branch 9.0.2 --depth 1 https://github.com/juce-framework/JUCE.git JUCE
