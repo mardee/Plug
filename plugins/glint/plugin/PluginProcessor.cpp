@@ -112,13 +112,13 @@ bool readNumberInRange (const juce::var& property, double minimum, double maximu
 
 struct RestoredState
 {
-    juce::ValueTree parameters { OzoMidiDelayProcessor::parameterTreeType };
+    juce::ValueTree parameters { OzoGlintProcessor::parameterTreeType };
     std::uint32_t seed = ozo::midi::Controls {}.seed;
 };
 
 bool validateState (const juce::ValueTree& root, RestoredState& restored)
 {
-    if (! root.hasType (OzoMidiDelayProcessor::stateRootType)
+    if (! root.hasType (OzoGlintProcessor::stateRootType)
         || root.getNumProperties() != 2 || root.getNumChildren() != 1)
         return false;
 
@@ -130,7 +130,7 @@ bool validateState (const juce::ValueTree& root, RestoredState& restored)
         return false;
 
     const auto parameters = root.getChild (0);
-    if (! parameters.hasType (OzoMidiDelayProcessor::parameterTreeType)
+    if (! parameters.hasType (OzoGlintProcessor::parameterTreeType)
         || parameters.getNumProperties() != 0 || parameters.getNumChildren() != 3)
         return false;
 
@@ -145,15 +145,15 @@ bool validateState (const juce::ValueTree& root, RestoredState& restored)
         unsigned int bit = 0;
         double maximum = 1.0;
         bool integer = false;
-        if (id == OzoMidiDelayProcessor::amountParameterID)
+        if (id == OzoGlintProcessor::amountParameterID)
             bit = 1u;
-        else if (id == OzoMidiDelayProcessor::characterParameterID)
+        else if (id == OzoGlintProcessor::characterParameterID)
         {
             bit = 2u;
             maximum = 2.0;
             integer = true;
         }
-        else if (id == OzoMidiDelayProcessor::outputModeParameterID)
+        else if (id == OzoGlintProcessor::outputModeParameterID)
         {
             bit = 4u;
             integer = true;
@@ -192,7 +192,7 @@ int safeChoice (float value, int maximum, int fallback) noexcept
 }
 }
 
-OzoMidiDelayProcessor::OzoMidiDelayProcessor()
+OzoGlintProcessor::OzoGlintProcessor()
     : juce::AudioProcessor (BusesProperties {}),
       apvts (*this, nullptr, parameterTreeType, createParameterLayout()),
       amountValue (apvts.getRawParameterValue (amountParameterID)),
@@ -202,12 +202,12 @@ OzoMidiDelayProcessor::OzoMidiDelayProcessor()
     jassert (amountValue != nullptr && characterValue != nullptr && outputModeValue != nullptr);
 }
 
-const juce::String OzoMidiDelayProcessor::getName() const
+const juce::String OzoGlintProcessor::getName() const
 {
-    return "ozo MIDI Delay";
+    return "ozo GLINT";
 }
 
-juce::AudioProcessorValueTreeState::ParameterLayout OzoMidiDelayProcessor::createParameterLayout()
+juce::AudioProcessorValueTreeState::ParameterLayout OzoGlintProcessor::createParameterLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
     const auto amountAttributes = juce::AudioParameterFloatAttributes()
@@ -233,7 +233,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout OzoMidiDelayProcessor::creat
     return layout;
 }
 
-void OzoMidiDelayProcessor::prepareToPlay (double sampleRate, int maximumExpectedSamplesPerBlock)
+void OzoGlintProcessor::prepareToPlay (double sampleRate, int maximumExpectedSamplesPerBlock)
 {
     juce::ignoreUnused (maximumExpectedSamplesPerBlock);
     scratchMidi.clear();
@@ -242,45 +242,45 @@ void OzoMidiDelayProcessor::prepareToPlay (double sampleRate, int maximumExpecte
     publishEngineStatus();
 }
 
-void OzoMidiDelayProcessor::releaseResources()
+void OzoGlintProcessor::releaseResources()
 {
     // There is no output buffer here. Ask the next non-empty callback to release old notes.
     reset();
 }
 
-void OzoMidiDelayProcessor::reset()
+void OzoGlintProcessor::reset()
 {
     resetSerial.fetch_add (1, std::memory_order_release);
 }
 
-bool OzoMidiDelayProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
+bool OzoGlintProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
     return layouts.inputBuses.isEmpty() && layouts.outputBuses.isEmpty();
 }
 
-void OzoMidiDelayProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
+void OzoGlintProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     processMidi (buffer.getNumSamples(), midi, false);
 }
 
-void OzoMidiDelayProcessor::processBlock (juce::AudioBuffer<double>& buffer, juce::MidiBuffer& midi)
+void OzoGlintProcessor::processBlock (juce::AudioBuffer<double>& buffer, juce::MidiBuffer& midi)
 {
     processMidi (buffer.getNumSamples(), midi, false);
 }
 
-void OzoMidiDelayProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer,
+void OzoGlintProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer,
                                                 juce::MidiBuffer& midi)
 {
     processMidi (buffer.getNumSamples(), midi, true);
 }
 
-void OzoMidiDelayProcessor::processBlockBypassed (juce::AudioBuffer<double>& buffer,
+void OzoGlintProcessor::processBlockBypassed (juce::AudioBuffer<double>& buffer,
                                                 juce::MidiBuffer& midi)
 {
     processMidi (buffer.getNumSamples(), midi, true);
 }
 
-ozo::midi::Controls OzoMidiDelayProcessor::readControls (bool bypassed) noexcept
+ozo::midi::Controls OzoGlintProcessor::readControls (bool bypassed) noexcept
 {
     const auto revision = stateRevision.load (std::memory_order_acquire);
     if ((revision & 1u) == 0)
@@ -305,7 +305,7 @@ ozo::midi::Controls OzoMidiDelayProcessor::readControls (bool bypassed) noexcept
     return audioControls;
 }
 
-ozo::midi::Transport OzoMidiDelayProcessor::readTransport() const
+ozo::midi::Transport OzoGlintProcessor::readTransport() const
 {
     ozo::midi::Transport transport;
     if (const auto* playHead = getPlayHead())
@@ -333,7 +333,7 @@ ozo::midi::Transport OzoMidiDelayProcessor::readTransport() const
     return transport;
 }
 
-void OzoMidiDelayProcessor::processMidi (int numSamples, juce::MidiBuffer& midi, bool bypassed)
+void OzoGlintProcessor::processMidi (int numSamples, juce::MidiBuffer& midi, bool bypassed)
 {
     // A zero-channel AudioBuffer still carries time. Only a zero-length block is inert:
     // do not consume input, change engine time, swap buffers, or acknowledge a reset.
@@ -358,7 +358,7 @@ void OzoMidiDelayProcessor::processMidi (int numSamples, juce::MidiBuffer& midi,
     scratchMidi.ensureSize (midiReserveBytes);
 }
 
-void OzoMidiDelayProcessor::publishEngineStatus() noexcept
+void OzoGlintProcessor::publishEngineStatus() noexcept
 {
     const auto status = engine.getStatus();
     const auto bits = (status.activeMode == ozo::midi::OutputMode::particles ? 1u : 0u)
@@ -366,23 +366,23 @@ void OzoMidiDelayProcessor::publishEngineStatus() noexcept
     publishedStatus.store (bits, std::memory_order_relaxed);
 }
 
-ozo::midi::OutputMode OzoMidiDelayProcessor::getActiveOutputMode() const noexcept
+ozo::midi::OutputMode OzoGlintProcessor::getActiveOutputMode() const noexcept
 {
     return (publishedStatus.load (std::memory_order_relaxed) & 1u) != 0
         ? ozo::midi::OutputMode::particles : ozo::midi::OutputMode::add;
 }
 
-bool OzoMidiDelayProcessor::isOutputModePending() const noexcept
+bool OzoGlintProcessor::isOutputModePending() const noexcept
 {
     return (publishedStatus.load (std::memory_order_relaxed) & 2u) != 0;
 }
 
-juce::AudioProcessorEditor* OzoMidiDelayProcessor::createEditor()
+juce::AudioProcessorEditor* OzoGlintProcessor::createEditor()
 {
-    return new OzoMidiDelayEditor (*this);
+    return new OzoGlintEditor (*this);
 }
 
-void OzoMidiDelayProcessor::getStateInformation (juce::MemoryBlock& destination)
+void OzoGlintProcessor::getStateInformation (juce::MemoryBlock& destination)
 {
     const juce::ScopedLock lock (stateLock);
     juce::ValueTree root { stateRootType };
@@ -394,7 +394,7 @@ void OzoMidiDelayProcessor::getStateInformation (juce::MemoryBlock& destination)
         copyXmlToBinary (*xml, destination);
 }
 
-void OzoMidiDelayProcessor::setStateInformation (const void* data, int sizeInBytes)
+void OzoGlintProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     // A v1 state is a tiny tree; reject missing or implausibly large data before parsing.
     if (data == nullptr || sizeInBytes <= 0 || sizeInBytes > 64 * 1024)
@@ -418,5 +418,5 @@ void OzoMidiDelayProcessor::setStateInformation (const void* data, int sizeInByt
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
-    return new OzoMidiDelayProcessor();
+    return new OzoGlintProcessor();
 }

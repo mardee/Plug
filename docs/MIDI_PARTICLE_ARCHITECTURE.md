@@ -1,10 +1,10 @@
-# ozo MIDI Particle Delay — 架构设计 v0.1
+# ozo GLINT — 架构设计 0.1.0
 
 日期：2026-10-10
 
-状态：设计基线；2026-10-10 已实现 0.1.0 原型及最简界面，完成核心与 AU/VST3 自建测试宿主验证；尚未完成实际 DAW 兼容性验收和跨音源调音。验证范围见 [实现说明](../plugins/midi-delay/README.md)。
+状态：2026-10-10 已按正式名称 ozo GLINT 重建 0.1.0 原型及最简界面；四组核心/Processor/AU/VST3 测试通过，并验证旧版 VST3 状态恢复和 MIDI 输出一致。实际 DAW 兼容性（包括旧工程恢复）和跨音源调音仍待验收。范围见 [实现说明](../plugins/glint/README.md) 与 [验证记录](../plugins/glint/VALIDATION.md)。
 
-产品正式名称未定，本文使用功能性工作名。本文不包含 UI/UX 设计。
+产品正式名称为 **ozo GLINT**。本次仅更名子工程及统一重新打包命名，版本保持 0.1.0，不扩大 MIDI 生成或声学功能范围。本文不包含 UI/UX 设计。
 
 ## 1. 产品决策
 
@@ -163,7 +163,7 @@ ECHO 仍受全局密度和同音安全约束，不保证每一个输入音符都
 ### 5.1 Add：优先简单接入
 
 ```text
-MIDI 输入 → ozo → 原始事件 + 生成事件 → 外部音源
+MIDI 输入 → ozo GLINT → 原始事件 + 生成事件 → 外部音源
 ```
 
 “保留原始演奏”指插件不主动改写原始事件的音高、力度和到达时间；下游音源仍可能因额外复音发生声部抢占，不承诺声音完全不变。
@@ -185,8 +185,8 @@ CC64/66 透传意味着原声和粒子共享踏板。Amount=0 或停止生成，
 ### 5.2 Particles：需要独立音色和生命周期时使用
 
 ```text
-原始 MIDI ──┬────────────────────────→ 主体音源
-            └→ ozo（Particles）→ 粒子音源 → 可选音频效果
+原始 MIDI ──┬─────────────────────────→ 主体音源
+            └→ ozo GLINT（Particles）→ 粒子音源 → 可选音频效果
 ```
 
 - 只发送生成的 Note On/Off。
@@ -293,12 +293,14 @@ seed 不提供首版调音控。随机抽样基于确定的事件序号，而非
 
 ## 8. 格式、工程边界和宿主验证
 
-现有工程为 C++17 / JUCE 9.0.2，PRISM 当前是无 MIDI 输入输出的音频效果器。新插件必须作为独立目标，使用新的插件 ID、bundle ID、参数命名空间和测试目标；不改变 PRISM 已发布 ID。
+现有工程为 C++17 / JUCE 9.0.2，PRISM 当前是无 MIDI 输入输出的音频效果器。GLINT 作为独立目标，与 PRISM 的插件身份、参数命名空间和测试目标分离，不改变 PRISM 已发布 ID。此次品牌更名不是创建另一款插件：GLINT 保留原有插件代码 `Omid`、厂商代码 `OzoA`、bundle ID `cn.ozo.mididelay`、状态标识 `OZO_MIDI_DELAY_STATE` 及稳定的参数 ID 和含义。真实 DAW 旧工程兼容性仍需验证，不能由身份不变直接推定通过；替换安装须由用户先备份并移除旧品牌文件，不应新旧同时安装。
 
-建议后续工程结构（本次不创建源码）：
+子工程路径为 `plugins/glint/`；Git 更名仅限该子工程及相关构建、归档和包名。根 Git 仓库 `mardee/Plug` 还包含 PRISM、LATTICE，因此不更名整个远端仓库。
+
+原设计的模块划分示意（不是当前源码文件清单；本次文档修订不创建源码）：
 
 ```text
-plugins/midi-delay/
+plugins/glint/
   CMakeLists.txt
   core/
     ParticleEngine.*
@@ -312,10 +314,12 @@ plugins/midi-delay/
     PluginState.*
   tests/
     core_tests.cpp
-    host_roundtrip_tests.cpp
+    host_tests.cpp
+    processor_tests.cpp
+    au_host_tests.mm
 ```
 
-先以独立、可选构建目标接入，不顺带改造 PRISM 发布链。可以延续 Mac 开发、Windows 构建包优先的工程方向，但本次不触发 CI、不发布构建。
+以独立、可选构建目标接入，不顺带改造 PRISM 发布链。构建使用 `OZO_BUILD_GLINT=ON`（旧 `OZO_BUILD_MIDI_DELAY` 保留兼容别名），构建目录为 `build/glint`；插件 target 为 `ozoGLINT`，核心库为 `ozoGlintCore`，测试 target 为 `ozoGlintCoreTests`、`ozoGlintHostTests`、`ozoGlintProcessorTests`、`ozoGlintAUHostTests`，CTest 使用 `glint.*` 名称。0.1.0 重新打包归档使用 `release/ozo-glint/0.1.0/` 和 `ozo-glint-0.1.0-<平台架构>.zip`，布局见 [本地发布归档](../plugins/glint/README.md#本地发布归档)。GLINT 重建验证结果见 [验证记录](../plugins/glint/VALIDATION.md)；只生成本地发布包，不触发 CI 或远端发布。
 
 ### 建议的首轮验证目标，不是支持声明
 

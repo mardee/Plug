@@ -56,12 +56,13 @@ void setParameter (juce::AudioPluginInstance& plugin, const juce::String& name, 
 class Host
 {
 public:
-    explicit Host (const juce::String& path)
+    explicit Host (const juce::String& path, const juce::String& expectedName = "ozo GLINT")
     {
         formats.addFormat (std::make_unique<juce::VST3PluginFormatHeadless>());
         juce::OwnedArray<juce::PluginDescription> descriptions;
         formats.getFormat (0)->findAllTypesForFile (descriptions, path);
         require (! descriptions.isEmpty(), "VST3 scan returned no descriptions");
+        require (descriptions[0]->name == expectedName, "VST3 scan exposes an unexpected product name");
         juce::String error;
         plugin = formats.createPluginInstance (*descriptions[0], sampleRate, blockSize, error);
         if (plugin == nullptr)
@@ -149,9 +150,9 @@ void checkBalanced (const std::vector<Event>& events)
 
 int main (int argc, char** argv)
 {
-    if (argc != 2)
+    if (argc != 2 && argc != 3)
     {
-        std::cerr << "Usage: ozoMidiHostTests /path/to/plugin.vst3\n";
+        std::cerr << "Usage: ozoGlintHostTests /path/to/GLINT.vst3 [/path/to/legacy-MIDI-Delay.vst3]\n";
         return 2;
     }
     const juce::String path (argv[1]);
@@ -223,6 +224,36 @@ int main (int argc, char** argv)
             checkBalanced (output);
             require (output.front().sample > 0, "Restored Particles mode leaked original input");
             std::cout << "PASS VST3 state restore without an editor\n";
+        }
+        if (argc == 3)
+        {
+            juce::MemoryBlock legacyState;
+            const std::vector<Event> input {
+                { 17, juce::MidiMessage::noteOn (1, 60, static_cast<juce::uint8> (92)) },
+                { 17, juce::MidiMessage::noteOn (1, 64, static_cast<juce::uint8> (87)) },
+                { 24000, juce::MidiMessage::noteOff (1, 60) },
+                { 24000, juce::MidiMessage::noteOff (1, 64) }
+            };
+            std::vector<Event> legacyOutput;
+            {
+                Host legacy (juce::String (argv[2]), "ozo MIDI Delay");
+                setParameter (*legacy.plugin, "Amount", 0.82f);
+                setParameter (*legacy.plugin, "Character", 0.5f);
+                setParameter (*legacy.plugin, "Output", 1.0f);
+                legacy.plugin->getStateInformation (legacyState);
+                legacyOutput = legacy.render (input, 12 * 48000);
+            }
+            require (legacyState.getSize() > 0, "Legacy plugin returned no state");
+            Host renamed (path);
+            renamed.plugin->setStateInformation (legacyState.getData(), static_cast<int> (legacyState.getSize()));
+            const auto renamedOutput = renamed.render (input, 12 * 48000);
+            checkBalanced (renamedOutput);
+            require (legacyOutput.size() == renamedOutput.size(), "Rename changed legacy-state event count");
+            for (std::size_t i = 0; i < legacyOutput.size(); ++i)
+                require (legacyOutput[i].sample == renamedOutput[i].sample
+                         && sameMessage (legacyOutput[i].message, renamedOutput[i].message),
+                         "Rename changed MIDI generated from actual legacy-plugin state");
+            std::cout << "PASS actual pre-GLINT VST3 state restored with identical MIDI output\n";
         }
         return 0;
     }

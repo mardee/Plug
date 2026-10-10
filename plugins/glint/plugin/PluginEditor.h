@@ -5,12 +5,12 @@
 
 #include <memory>
 
-class OzoMidiDelayEditor final : public juce::AudioProcessorEditor,
+class OzoGlintEditor final : public juce::AudioProcessorEditor,
                                  private juce::Timer
 {
 public:
-    explicit OzoMidiDelayEditor (OzoMidiDelayProcessor&);
-    ~OzoMidiDelayEditor() override;
+    explicit OzoGlintEditor (OzoGlintProcessor&);
+    ~OzoGlintEditor() override;
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -18,7 +18,7 @@ public:
 private:
     void timerCallback() override;
 
-    OzoMidiDelayProcessor& processor;
+    OzoGlintProcessor& processor;
     juce::Label titleLabel;
     juce::Label amountLabel;
     juce::Label characterLabel;
@@ -34,5 +34,5 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> characterAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> outputAttachment;
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OzoMidiDelayEditor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OzoGlintEditor)
 };

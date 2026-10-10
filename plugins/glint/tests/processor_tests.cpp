@@ -13,19 +13,19 @@ void require (bool condition, const char* message)
         throw std::runtime_error (message);
 }
 
-float value (OzoMidiDelayProcessor& processor, const char* id)
+float value (OzoGlintProcessor& processor, const char* id)
 {
     return processor.getAPVTS().getRawParameterValue (id)->load();
 }
 
-void setValue (OzoMidiDelayProcessor& processor, const char* id, float actual)
+void setValue (OzoGlintProcessor& processor, const char* id, float actual)
 {
     auto* parameter = processor.getAPVTS().getParameter (id);
     require (parameter != nullptr, "Missing processor parameter");
     parameter->setValueNotifyingHost (parameter->convertTo0to1 (actual));
 }
 
-void tick (OzoMidiDelayProcessor& processor)
+void tick (OzoGlintProcessor& processor)
 {
     juce::AudioBuffer<float> audio (0, 128);
     juce::MidiBuffer midi;
@@ -56,8 +56,9 @@ int main (int argc, char** argv)
     juce::ScopedJuceInitialiser_GUI init;
     try
     {
-        OzoMidiDelayProcessor processor;
+        OzoGlintProcessor processor;
         processor.prepareToPlay (48000.0, 128);
+        require (processor.getName() == "ozo GLINT", "Processor still exposes the old product name");
         require (processor.isMidiEffect() && processor.acceptsMidi() && processor.producesMidi(),
                  "Processor MIDI capabilities are incorrect");
         require (processor.getTotalNumInputChannels() == 0 && processor.getTotalNumOutputChannels() == 0,
@@ -152,6 +153,28 @@ int main (int argc, char** argv)
         }
         std::cout << "PASS malformed, nonfinite, duplicate and future-version state rejection\n";
 
+        {
+            const auto legacy = juce::parseXML (R"xml(
+                <OZO_MIDI_DELAY_STATE version="1" seed="1870294833">
+                    <PARAMETERS>
+                        <PARAM id="amount" value="0.42"/>
+                        <PARAM id="character" value="0"/>
+                        <PARAM id="outputMode" value="1"/>
+                    </PARAMETERS>
+                </OZO_MIDI_DELAY_STATE>
+            )xml");
+            require (legacy != nullptr, "Invalid legacy test fixture");
+            const auto bytes = serialise (*legacy);
+            processor.setStateInformation (bytes.getData(), static_cast<int> (bytes.getSize()));
+            tick (processor);
+            require (std::abs (value (processor, "amount") - 0.42f) < 0.001f
+                     && value (processor, "character") == 0.0f && value (processor, "outputMode") == 1.0f,
+                     "GLINT rejected pre-rename MIDI Delay state");
+            require (processor.getActiveOutputMode() == ozo::midi::OutputMode::particles,
+                     "Legacy output routing was not restored");
+            std::cout << "PASS pre-GLINT v1 state compatibility\n";
+        }
+
         setValue (processor, "amount", 0.3f);
         setValue (processor, "character", 1.0f);
         setValue (processor, "outputMode", 0.0f);
@@ -161,9 +184,12 @@ int main (int argc, char** argv)
         require (editor->getWidth() >= 300 && editor->getHeight() >= 200, "Editor has invalid dimensions");
         int sliders = 0;
         int choices = 0;
+        bool brandedTitle = false;
         for (auto* child : editor->getChildren())
         {
             require (editor->getLocalBounds().contains (child->getBounds()), "A control extends outside the editor");
+            if (const auto* label = dynamic_cast<juce::Label*> (child))
+                brandedTitle = brandedTitle || label->getText() == "ozo GLINT";
             if (auto* slider = dynamic_cast<juce::Slider*> (child))
             {
                 ++sliders;
@@ -189,6 +215,7 @@ int main (int argc, char** argv)
                 }
             }
         }
+        require (brandedTitle, "Editor does not display ozo GLINT");
         require (sliders == 1 && choices == 2, "Minimal editor should contain one slider and two choices");
         std::cout << "PASS minimal editor controls and parameter attachments\n";
         editor.reset();

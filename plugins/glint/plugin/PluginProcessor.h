@@ -7,11 +7,11 @@
 #include <cstddef>
 #include <cstdint>
 
-class OzoMidiDelayProcessor final : public juce::AudioProcessor
+class OzoGlintProcessor final : public juce::AudioProcessor
 {
 public:
-    OzoMidiDelayProcessor();
-    ~OzoMidiDelayProcessor() override = default;
+    OzoGlintProcessor();
+    ~OzoGlintProcessor() override = default;
 
     static constexpr const char* amountParameterID = "amount";
     static constexpr const char* characterParameterID = "character";
@@ -85,5 +85,5 @@ private:
     // Bit 0: active Particles mode. Bit 1: a mode change is pending.
     std::atomic<unsigned int> publishedStatus { 0 };
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OzoMidiDelayProcessor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OzoGlintProcessor)
 };

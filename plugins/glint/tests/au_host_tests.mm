@@ -487,7 +487,7 @@ int main (int argc, char** argv)
 {
     if (argc != 2)
     {
-        std::cerr << "Usage: ozoMidiAUHostTests /absolute/path/ozo MIDI Delay.component\n";
+        std::cerr << "Usage: ozoGlintAUHostTests /absolute/path/ozo GLINT.component\n";
         return 1;
     }
     try

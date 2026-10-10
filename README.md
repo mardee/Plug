@@ -1,4 +1,10 @@
-# ozo PRISM
+# ozo 插件系列
+
+- **[ozo GLINT](plugins/glint/README.md)**：生成式 MIDI 粒子 Delay，一旋钮、三种生成性格，提供 AU MIDI FX / VST3。
+- **ozo PRISM**：录音棚染色插件，构建和早期设计记录见下文。
+- **[ozo LATTICE](LATTICE/)**：节奏工具独立工程。
+
+## ozo PRISM
 
 > Windows 快速包、双平台发布和最新构建命令见 [构建与打包指南](docs/BUILDING.md)。下方保留早期设计记录，其中压缩器、Glue 和旧预设描述不代表当前版本。
 

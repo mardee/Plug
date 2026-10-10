@@ -10,7 +10,7 @@ const juce::Colour outline { 0xff555b64 };
 const juce::Colour accent { 0xffbdd5e8 };
 }
 
-OzoMidiDelayEditor::OzoMidiDelayEditor (OzoMidiDelayProcessor& owner)
+OzoGlintEditor::OzoGlintEditor (OzoGlintProcessor& owner)
     : juce::AudioProcessorEditor (owner), processor (owner)
 {
     setOpaque (true);
@@ -25,7 +25,7 @@ OzoMidiDelayEditor::OzoMidiDelayEditor (OzoMidiDelayProcessor& owner)
         addAndMakeVisible (label);
     };
 
-    setupLabel (titleLabel, "ozo MIDI Delay");
+    setupLabel (titleLabel, "ozo GLINT");
     titleLabel.setFont (juce::FontOptions (25.0f, juce::Font::bold));
     titleLabel.setColour (juce::Label::textColourId, text);
     setupLabel (amountLabel, "Amount");
@@ -77,11 +77,11 @@ OzoMidiDelayEditor::OzoMidiDelayEditor (OzoMidiDelayProcessor& owner)
 
     auto& state = processor.getAPVTS();
     amountAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
-        state, OzoMidiDelayProcessor::amountParameterID, amountSlider);
+        state, OzoGlintProcessor::amountParameterID, amountSlider);
     characterAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
-        state, OzoMidiDelayProcessor::characterParameterID, characterCombo);
+        state, OzoGlintProcessor::characterParameterID, characterCombo);
     outputAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
-        state, OzoMidiDelayProcessor::outputModeParameterID, outputCombo);
+        state, OzoGlintProcessor::outputModeParameterID, outputCombo);
 
     // The parameter's text formatter supplies percentages, including the initial 30%.
     setSize (430, 300);
@@ -89,12 +89,12 @@ OzoMidiDelayEditor::OzoMidiDelayEditor (OzoMidiDelayProcessor& owner)
     startTimerHz (8);
 }
 
-OzoMidiDelayEditor::~OzoMidiDelayEditor()
+OzoGlintEditor::~OzoGlintEditor()
 {
     stopTimer();
 }
 
-void OzoMidiDelayEditor::paint (juce::Graphics& graphics)
+void OzoGlintEditor::paint (juce::Graphics& graphics)
 {
     graphics.fillAll (background);
     graphics.setColour (outline.withAlpha (0.55f));
@@ -102,7 +102,7 @@ void OzoMidiDelayEditor::paint (juce::Graphics& graphics)
     graphics.drawHorizontalLine (258, 22.0f, static_cast<float> (getWidth() - 22));
 }
 
-void OzoMidiDelayEditor::resized()
+void OzoGlintEditor::resized()
 {
     titleLabel.setBounds (24, 20, 382, 32);
     amountLabel.setBounds (24, 82, 158, 24);
@@ -115,7 +115,7 @@ void OzoMidiDelayEditor::resized()
     statusLabel.setBounds (261, 268, 147, 18);
 }
 
-void OzoMidiDelayEditor::timerCallback()
+void OzoGlintEditor::timerCallback()
 {
     const auto active = processor.getActiveOutputMode();
     const auto pending = processor.isOutputModePending();

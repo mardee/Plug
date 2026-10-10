@@ -5,8 +5,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(OZO_BUILD_MIDI_DELAY "Build the independent MIDI particle delay" OFF)
-if(APPLE AND OZO_BUILD_MIDI_DELAY)
+option(OZO_BUILD_MIDI_DELAY "Deprecated alias for OZO_BUILD_GLINT" OFF)
+option(OZO_BUILD_GLINT "Build the ozo GLINT MIDI particle delay" ${OZO_BUILD_MIDI_DELAY})
+mark_as_advanced(OZO_BUILD_MIDI_DELAY)
+if(APPLE AND OZO_BUILD_GLINT)
     enable_language(OBJCXX)
 endif()
 
@@ -63,8 +65,8 @@ target_link_libraries(ozoPRISM PRIVATE
 include(CTest)
 option(PRISM_BUILD_SNAPSHOT "Build the offline UI snapshot tool" ON)
 
-if(OZO_BUILD_MIDI_DELAY)
-    add_subdirectory(plugins/midi-delay)
+if(OZO_BUILD_GLINT)
+    add_subdirectory(plugins/glint)
 endif()
 
 if(BUILD_TESTING)
