@@ -1,4 +1,10 @@
-# ozo GLINT 0.1.0 验证记录
+# ozo GLINT 验证记录
+
+## 当前版本 0.1.4
+
+当前完整记录见 [模式、八度与混合节奏验证](OCTAVES_MIXED_014.md#014-验证结果)。69项核心及UBSan通过，四组插件回归通过，v3状态兼容读取v1/v2。VST3为带静音双声道输出的MIDI乐器，AU保持MIDIProcessor。以下保留0.1.0更名阶段的历史记录，其UI尺寸、状态版本和逐事件兼容结论不代表当前算法。
+
+# ozo GLINT 0.1.0 历史验证记录
 
 日期：2026-10-10。平台：本地 Apple Silicon macOS，AppleClang 17，JUCE 9.0.2，C++17。正式品牌为 ozo GLINT，原工作名为 ozo MIDI Delay。
 

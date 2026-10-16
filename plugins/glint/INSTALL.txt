@@ -1,0 +1,55 @@
+ozo NIGHTSHIFT 0.3.0 — MIDI Particle Delay
+
+This plugin generates delayed MIDI notes. It does not contain a sound engine and
+it does not process audio. Route its MIDI output to an instrument.
+
+WINDOWS x64 / VST3
+1. Close the DAW before replacing a plugin that it has already loaded.
+2. Back up any existing ozo GLINT / ozo NIGHTSHIFT MIDI plugin.
+3. Copy the ENTIRE "ozo NIGHTSHIFT.vst3" folder to:
+   C:\Program Files\Common Files\VST3\
+   Administrator permission may be required.
+4. Rescan VST3 instruments in the DAW. NIGHTSHIFT is listed as an instrument with
+   MIDI output; its stereo audio output is intentionally silent.
+5. Feed a MIDI clip/keyboard into NIGHTSHIFT. On a second instrument track, select
+   NIGHTSHIFT's MIDI output as input, enable monitoring and load a sound instrument.
+
+MAC Apple Silicon / AU + VST3
+- AU MIDI FX: copy "ozo NIGHTSHIFT.component" to
+  ~/Library/Audio/Plug-Ins/Components/
+- VST3: copy the ENTIRE "ozo NIGHTSHIFT.vst3" folder to
+  ~/Library/Audio/Plug-Ins/VST3/
+- In Logic use the AU in a software instrument track's MIDI FX slot.
+- The macOS package is arm64 only, deployment target macOS 12.0. Run the DAW
+  natively on Apple Silicon; an Intel/Rosetta host cannot load this arm64 build.
+- This is ad-hoc signed, not Developer ID notarized. macOS may require explicit
+  approval of a downloaded plugin; no security settings are changed by this package.
+
+COMPATIBILITY
+The plugin retains bundle ID cn.ozo.mididelay and the old GLINT/MIDI Delay plugin
+identity. It replaces that MIDI plugin rather than installing beside it. Keep only
+one copy of this identity in DAW scan paths. The separate ozo GLINT FX audio plugin
+is a different product and should not be removed.
+
+CURRENT UI
+- Square lane lamps toggle lanes; inactive controls are dim but remain editable.
+- First / Repeat: ten beat divisions; Feedback / Level: continuous values.
+- Drag main-panel knobs to see their values in the cursor tooltip.
+- Click a lane panel background or double-click its runway to open all lane options.
+- Detail knobs show their current values below them: First, Repeat, Feedback, Level,
+  Gate, Motion, Cycle, plus the lane enable lamp.
+- The preset bar offers Factory/Mine lists, previous/next, save (+) and delete (x).
+  Factory presets cannot be deleted. User overwrite and deletion require confirmation.
+- User presets store all 60 parameters. On macOS they reside at
+  ~/Library/Application Support/ozo/NIGHTSHIFT/Presets/
+  and on Windows under the user's application data folder: ozo\NIGHTSHIFT\Presets\.
+
+LIGHTS
+The airport lights show lane enable/standby and actual generated MIDI activity,
+not an audio peak meter. Decorative welcome/enable/standby sweeps do not emit MIDI.
+Visual event time is an estimate and does not compensate device/DAW audio latency.
+
+KNOWN LIMITS
+Read RELEASE_NOTES.md before using this build in an important session. Keep a
+backup of existing projects and the previous plugin. Full cross-DAW qualification
+and commercial signing/notarization have not been completed.

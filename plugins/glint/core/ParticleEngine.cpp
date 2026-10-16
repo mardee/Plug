@@ -21,15 +21,12 @@ void ParticleEngine::prepare (double sampleRate) noexcept
 {
     sources_.fill (SourceKey {});
     channels_.fill (Channel {});
-    tail_.fill (SourceChoice {});
     voices_.fill (Voice {});
     recentOns_.fill (0);
-    activity_ = {};
-    candidate_ = {};
-    policy_ = mapAmount (0.30);
-    tailSize_ = rateHead_ = rateSize_ = 0;
-    lastSource_ = -1;
-    sourceOrder_ = echoOrder_ = generatedNoteOns_ = skippedCandidates_ = 0;
+    clouds_.fill (Cloud {});
+    priorityUntil_ = nextEmit_ = 0;
+    rateHead_ = rateSize_ = 0;
+    cloudOrder_ = generatedNoteOns_ = skippedCandidates_ = 0;
     sampleRate_ = std::isfinite (sampleRate) && sampleRate >= 1.0 && sampleRate <= 768000.0
                     ? sampleRate : 44100.0;
     bpm_ = lastValidBpm_ = 120.0;
@@ -40,34 +37,14 @@ void ParticleEngine::prepare (double sampleRate) noexcept
     previousBlockSize_ = 0;
     transportSeen_ = previousPpqValid_ = false;
     amount_ = 0.30;
-    character_ = Character::bloom;
+    manualLanes_ = false;
+    manualControls_ = defaultLanes();
+    root_ = 0;
+    scale_ = Scale::unset;
     activeMode_ = requestedMode_ = OutputMode::add;
-    seed_ = 0x6f7a6f31u;
+    seed_ = randomState_ = 0x6f7a6f31u;
     resetSerial_ = 0;
     enabled_ = controlsSeen_ = false;
-    reseed();
-}
-
-ParticleEngine::Policy ParticleEngine::mapAmount (double amount) noexcept
-{
-    constexpr double positions[] { 0.0, 0.1, 0.3, 0.6, 1.0 };
-    constexpr double rates[] { 0.25, 0.5, 1.0, 2.0, 4.0 };
-    constexpr double spans[] { 0.5, 1.0, 2.0, 4.0, 8.0 };
-    constexpr double velocities[] { 0.20, 0.30, 0.45, 0.50, 0.55 };
-    int segment = 0;
-    while (segment < 3 && amount > positions[segment + 1])
-        ++segment;
-    const double mix = (amount - positions[segment])
-                       / (positions[segment + 1] - positions[segment]);
-    Policy policy;
-    policy.rate = rates[segment] + mix * (rates[segment + 1] - rates[segment]);
-    policy.span = spans[segment] + mix * (spans[segment + 1] - spans[segment]);
-    policy.velocity = velocities[segment]
-                      + mix * (velocities[segment + 1] - velocities[segment]);
-    policy.upperOctave = 0.50 * amount;
-    policy.secondOctave = amount < 0.6 ? 0.0 : 0.04 + 0.40 * (amount - 0.6);
-    policy.pulseStep = amount < 0.6 ? 0.5 : 0.25;
-    return policy;
 }
 
 ParticleEngine::Tick ParticleEngine::durationSamples (double seconds) const noexcept
@@ -100,8 +77,7 @@ bool ParticleEngine::updateClock (const Transport& transport, int numSamples) no
                             && transport.bpm >= 1.0 && transport.bpm <= 1000.0;
     if (validTempo)
         lastValidBpm_ = transport.bpm;
-    const double newBpm = validTempo ? transport.bpm
-                         : (transport.isPlaying ? 120.0 : lastValidBpm_);
+    const double newBpm = validTempo ? transport.bpm : lastValidBpm_;
     const bool ppqAvailable = transport.hasPpq && std::isfinite (transport.ppqPosition)
                               && std::abs (transport.ppqPosition) <= 1.0e9;
     const bool validPpq = transport.isPlaying && ppqAvailable;
@@ -135,6 +111,12 @@ bool ParticleEngine::updateClock (const Transport& transport, int numSamples) no
         anchorSample_ = sampleClock_;
         anchorBeat_ = validPpq ? static_cast<long double> (transport.ppqPosition) : currentBeat;
     }
+    else if (validPpq)
+    {
+        // Sync grids follow the host's beat origin, including tempo automation.
+        anchorSample_ = sampleClock_;
+        anchorBeat_ = static_cast<long double> (transport.ppqPosition);
+    }
     else if (newBpm != bpm_)
     {
         anchorSample_ = sampleClock_;
@@ -150,234 +132,504 @@ bool ParticleEngine::updateClock (const Transport& transport, int numSamples) no
     return discontinuity;
 }
 
-void ParticleEngine::reseed() noexcept
+double ParticleEngine::randomUnit (std::uint32_t& state) noexcept
 {
-    randomState_ = seed_ == 0 ? 0x6f7a6f31u : seed_;
-    echoOrder_ = 0;
-    lastSource_ = -1;
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return static_cast<double> (state) / 4294967296.0;
 }
 
-double ParticleEngine::randomUnit() noexcept
+void ParticleEngine::cancelClouds() noexcept
 {
-    randomState_ ^= randomState_ << 13;
-    randomState_ ^= randomState_ >> 17;
-    randomState_ ^= randomState_ << 5;
-    return static_cast<double> (randomState_) / 4294967296.0;
-}
-
-void ParticleEngine::cancelActivity() noexcept
-{
-    activity_ = {};
-    candidate_ = {};
-    tailSize_ = 0;
+    clouds_.fill (Cloud {});
+    priorityUntil_ = 0;
 }
 
 void ParticleEngine::cancelGeneration (Tick time, Tick blockStart, MidiOutput& output) noexcept
 {
-    cancelActivity();
+    cancelClouds();
     for (auto& voice : voices_)
         releaseVoice (voice, time, blockStart, output);
+    // Pedal-held keys retain reservations until the matching incoming pedal release.
+    // Never send a channel-wide pedal/All-Sound-Off that could kill the melody.
 }
 
-double ParticleEngine::activityAt (Tick time) const noexcept
-{
-    if (! activity_.active || time >= activity_.hardEnd)
-        return 0.0;
-    const long double span = activity_.endBeat - activity_.startBeat;
-    const long double left = activity_.endBeat - beatAt (time);
-    if (span <= 0.0L || left <= 0.0L)
-        return 0.0;
-    return activity_.peak * static_cast<double> (std::min (1.0L, left / span));
-}
-
-void ParticleEngine::expireActivity (Tick time) noexcept
-{
-    if (activity_.active
-        && (time >= activity_.hardEnd || sampleAtBeat (activity_.endBeat, time) == time))
-        cancelActivity();
-}
-
-void ParticleEngine::strike (int velocity, Tick time) noexcept
+void ParticleEngine::strike (int key, int velocity, Tick time) noexcept
 {
     if (! enabled_)
         return;
-    expireActivity (time);
-    const double oldActivity = activityAt (time);
-    activity_.peak = std::max (oldActivity, 0.65 + 0.35 * velocity / 127.0);
-    activity_.startBeat = beatAt (time);
-    activity_.endBeat = activity_.startBeat + policy_.span;
-    activity_.hardEnd = addTicks (time, durationSamples (8.0));
-    activity_.active = true;
-    if (! candidate_.valid)
-        scheduleCandidate (time, true);
-}
-
-void ParticleEngine::scheduleCandidate (Tick time, bool first) noexcept
-{
-    if (! activity_.active || ! enabled_)
+    priorityUntil_ = addTicks (time, durationSamples (0.035));
+    Cloud* slot = nullptr;
+    Cloud* oldest = nullptr;
+    Cloud* oldestChannel = nullptr;
+    Cloud* chord = nullptr;
+    int channelCount = 0;
+    for (auto& cloud : clouds_)
     {
-        candidate_.valid = false;
+        if (cloud.activeLanes != 0
+            && (time >= cloud.hardEnd
+                || beatAt (time) >= cloud.triggerBeat + (cloud.manual ? 64.0L : 32.0L)))
+            cloud = {};
+        if (cloud.activeLanes == 0)
+        {
+            if (slot == nullptr)
+                slot = &cloud;
+            continue;
+        }
+        if (oldest == nullptr || cloud.order < oldest->order)
+            oldest = &cloud;
+        if (cloud.notes[0].key / 128 != key / 128)
+            continue;
+        ++channelCount;
+        if (oldestChannel == nullptr || cloud.order < oldestChannel->order)
+            oldestChannel = &cloud;
+        // Chord window is anchored to its first strike, never extended by arpeggios.
+        if (cloud.step == 0 && time - cloud.triggerTime <= durationSamples (0.020))
+            chord = &cloud;
+    }
+    if (chord != nullptr)
+    {
+        for (int i = 0; i < chord->noteCount; ++i)
+            if (chord->notes[static_cast<std::size_t> (i)].key == key)
+            {
+                chord->notes[static_cast<std::size_t> (i)].velocity = velocity;
+                return;
+            }
+        if (chord->noteCount < 8)
+            chord->notes[static_cast<std::size_t> (chord->noteCount++)] = { key, velocity };
         return;
     }
-
-    const long double now = beatAt (time);
-    long double target = now;
-    if (character_ == Character::pulse)
+    // New harmony cannot be guaranteed consonant with an old cloud: age plus each
+    // subsequent input cloud attenuates it, without resetting its decay clock.
+    for (auto& cloud : clouds_)
+        if (cloud.activeLanes != 0 && ! cloud.manual)
+            cloud.newerStrikes = std::min (64, cloud.newerStrikes + 1);
+    if (channelCount >= 3)
+        slot = oldestChannel;
+    if (slot == nullptr)
+        slot = oldest;
+    if (slot == nullptr)
+        return;
+    // Retiring a full slot only forgets future replies, never its emitted Off ledger.
+    *slot = {};
+    increment (cloudOrder_);
+    slot->order = cloudOrder_;
+    slot->notes[0] = { key, velocity };
+    slot->noteCount = 1;
+    slot->triggerTime = time;
+    slot->triggerBeat = beatAt (time);
+    // Safety guards only; the relative exponential upper bound normally ends lanes.
+    slot->manual = manualLanes_;
+    slot->hardEnd = addTicks (time, durationSamples (slot->manual ? 48.0 : 24.0));
+    constexpr IntervalRole roles[] { IntervalRole::unison, IntervalRole::upThird,
+        IntervalRole::upFifth, IntervalRole::upOctave, IntervalRole::downThird,
+        IntervalRole::downFifth, IntervalRole::downOctave };
+    // Additional lower replies enter later; all offsets are finite musical values.
+    constexpr long double firstOffsets[] { 1.0L, 0.75L, 1.5L, 0.5L, 2.0L, 2.5L, 3.0L };
+    constexpr double thresholds[] { 0.65, 0.18, 0.28, 0.0, 0.75, 0.75, 0.50 };
+    for (std::size_t i = 0; i < slot->lanes.size(); ++i)
     {
-        const long double step = policy_.pulseStep;
-        target = (std::floor (now / step + 1.0e-12L) + 1.0L) * step;
+        auto& lane = slot->lanes[i];
+        lane.intervalRole = roles[i];
+        randomUnit (randomState_);
+        lane.randomState = randomState_;
+        // Reserved former count draw preserves the initial gain/decay random sequence.
+        randomUnit (lane.randomState);
+        const double gainDraw = randomUnit (lane.randomState);
+        lane.firstGain = i == 0 ? 0.22 : i >= 4 ? 0.25 + 0.07 * gainDraw
+                                                               : 0.32 + 0.13 * gainDraw;
+        lane.decay = 0.14 + 0.06 * randomUnit (lane.randomState);
+        // Independent waves, staggered by role; neither velocity nor Amount enters.
+        lane.phase = static_cast<double> (i) * 0.897597901025655
+                     + 6.283185307179586 * randomUnit (lane.randomState);
+        lane.wavePeriod = 2.7 + 0.6 * randomUnit (lane.randomState);
+        const bool needsScale = i == 1 || i == 2 || i == 4 || i == 5;
+        lane.settings = manualControls_[i];
+        lane.active = slot->manual ? lane.settings.enabled && lane.settings.level > 0.0f
+            : amount_ + 1.0e-6 >= thresholds[i] && (! needsScale || scale_ != Scale::unset);
+        if (lane.active)
+            ++slot->activeLanes;
+        // Decay starts at the planned first reply, even while its key is occupied.
+        lane.firstBeat = slot->triggerBeat + (slot->manual
+            ? static_cast<long double> (noteBeats[static_cast<std::size_t> (lane.settings.first)])
+            : firstOffsets[i]);
+        lane.nextBeat = lane.firstBeat;
+        lane.earliest = addTicks (time, slot->manual ? Tick { 1 } : durationSamples (0.060));
+        // Each candidate yields to new input for at most 120 ms, then grid-snaps.
+        lane.priorityCap = addTicks (sampleAtBeat (lane.nextBeat, lane.earliest),
+                                     durationSamples (0.120));
     }
-    else
-    {
-        double interval = 1.0 / policy_.rate;
-        if (first)
-            interval = std::min (0.5, interval);
-        if (character_ == Character::bloom)
-            interval *= 0.8 - 0.3 * amount_ + (0.4 + 0.6 * amount_) * randomUnit();
-        target += interval;
-    }
-    candidate_.beat = target;
-    candidate_.earliest = addTicks (time, 1);
-    candidate_.valid = true;
 }
 
-ParticleEngine::Tick ParticleEngine::candidateTime (Tick from) const noexcept
+long double ParticleEngine::nextGap (Lane& lane) noexcept
 {
-    if (! candidate_.valid || ! activity_.active)
+    const double draw = randomUnit (lane.randomState);
+    // Quarter-note beats, including dotted values. Each role has its own clock;
+    // only the fifth occasionally makes a pair, never an unbounded short run.
+    if (lane.intervalRole == IntervalRole::upThird || lane.intervalRole == IntervalRole::downThird)
+        return draw < 0.55 ? 1.0L : 1.5L;
+    if (lane.intervalRole == IntervalRole::upOctave || lane.intervalRole == IntervalRole::downOctave
+        || lane.intervalRole == IntervalRole::unison)
+        return draw < 0.25 ? 0.75L : draw < 0.65 ? 1.0L : 1.5L;
+    if (lane.shortRun != 0)
+    {
+        lane.shortRun = 0;
+        return draw < 0.5 ? 0.75L : 1.0L;
+    }
+    const long double gap = amount_ > 0.65
+        ? (draw < 0.04 ? 0.125L : draw < 0.10 ? 0.25L : draw < 0.18 ? 0.375L
+           : draw < 0.50 ? 0.5L : draw < 0.80 ? 0.75L : 1.0L)
+        : (draw < 0.06 ? 0.25L : draw < 0.12 ? 0.375L
+           : draw < 0.45 ? 0.5L : draw < 0.80 ? 0.75L : 1.0L);
+    lane.shortRun = gap < 0.5L ? 1 : 0;
+    return gap;
+}
+
+ParticleEngine::Tick ParticleEngine::cloudTime (const Cloud& cloud, const Lane& lane,
+                                                Tick from) const noexcept
+{
+    if (! lane.active)
         return never;
-    return sampleAtBeat (candidate_.beat, std::max (from, candidate_.earliest));
+    const Tick expiry = std::min (std::max (from, cloud.hardEnd),
+                                 sampleAtBeat (cloud.triggerBeat + (cloud.manual ? 64.0L : 32.0L), from));
+    const Tick priority = cloud.manual ? Tick { 0 } : std::min (priorityUntil_, lane.priorityCap);
+    const Tick earliest = std::max ({ from, lane.earliest, priority, nextEmit_ });
+    const long double grid = cloud.manual ? 0.0625L : 0.125L;
+    const Tick planned = sampleAtBeat (lane.nextBeat, 0);
+    const long double needed = beatAt (earliest);
+    // Preserve the 0.2.1 sample-aware ceil: at non-integral tempos a rounded
+    // sample boundary must not accidentally defer the candidate an extra cell.
+    const long double cells = planned >= earliest ? 0.0L
+        : std::max (0.0L, std::ceil ((needed - lane.nextBeat - beatsPerSample_) / grid - 1.0e-7L));
+    const Tick due = sampleAtBeat (lane.nextBeat + cells * grid, earliest);
+    return std::min (expiry, due);
+}
+
+ParticleEngine::Tick ParticleEngine::voiceTime (const Voice& voice, Tick from) const noexcept
+{
+    if (! voice.down)
+        return never;
+    return std::min (std::max (from, voice.hardEnd),
+                    sampleAtBeat (voice.endBeat, std::max (from, voice.earliestEnd)));
 }
 
 ParticleEngine::Tick ParticleEngine::nextScheduledTime (Tick from) const noexcept
 {
-    Tick next = candidateTime (from);
-    if (activity_.active)
-        next = std::min (next, std::min (sampleAtBeat (activity_.endBeat, from),
-                                        std::max (from, activity_.hardEnd)));
+    Tick next = never;
+    for (const auto& cloud : clouds_)
+        for (const auto& lane : cloud.lanes)
+            next = std::min (next, cloudTime (cloud, lane, from));
     for (const auto& voice : voices_)
-        if (voice.down)
-            next = std::min (next, std::min (sampleAtBeat (voice.endBeat, from),
-                                            std::max (from, voice.hardEnd)));
+        next = std::min (next, voiceTime (voice, from));
     return next;
 }
 
-void ParticleEngine::runBefore (Tick limit, Tick& cursor, Tick blockStart, MidiOutput& output) noexcept
+void ParticleEngine::runBefore (Tick limit, Tick& cursor, Tick blockStart, MidiOutput& output,
+                                GeneratedNoteObserver* observer) noexcept
 {
     for (;;)
     {
         const Tick next = nextScheduledTime (cursor);
         if (next >= limit)
             break;
-        runAt (next, blockStart, output);
+        runAt (next, blockStart, output, observer);
         cursor = next;
     }
     cursor = limit;
 }
 
-void ParticleEngine::runAt (Tick time, Tick blockStart, MidiOutput& output) noexcept
+void ParticleEngine::runAt (Tick time, Tick blockStart, MidiOutput& output,
+                            GeneratedNoteObserver* observer) noexcept
 {
     releaseDue (time, blockStart, output);
-    expireActivity (time);
-    if (candidateTime (time) == time)
+    // Bounded coordinator: oldest scheduled sample wins, then cloud order, then
+    // lane array order. Successful Ons stagger all other lanes on their own grids.
+    for (int pass = 0; pass < 56; ++pass)
     {
-        generate (time, blockStart, output);
-        scheduleCandidate (time, false);
+        Cloud* due = nullptr;
+        Lane* dueLane = nullptr;
+        Tick dueSample = never;
+        for (auto& cloud : clouds_)
+        {
+            if (cloud.activeLanes == 0)
+                continue;
+            if (time >= cloud.hardEnd
+                || sampleAtBeat (cloud.triggerBeat + (cloud.manual ? 64.0L : 32.0L), time) == time)
+            {
+                cloud = {};
+                continue;
+            }
+            for (auto& lane : cloud.lanes)
+                if (cloudTime (cloud, lane, time) == time)
+                {
+                    // Compare sample positions, not floating PPQ, for stable ties.
+                    const Tick scheduled = sampleAtBeat (lane.nextBeat, 0);
+                    if (due == nullptr || scheduled < dueSample
+                        || (scheduled == dueSample && cloud.order < due->order))
+                    {
+                        due = &cloud;
+                        dueLane = &lane;
+                        dueSample = scheduled;
+                    }
+                }
+        }
+        if (due == nullptr)
+            break;
+        const long double onsetBeat = onsetAt (*due, beatAt (time));
+        // End on the upper envelope, not a wave trough or absolute MIDI velocity.
+        // This only retires future replies; sounding/held voices keep their ledger.
+        const auto& live = manualControls_[static_cast<std::size_t> (dueLane->intervalRole)];
+        const bool onePass = due->manual && live.feedback == 0.0f && dueLane->emitted == 0;
+        const double upper = decayUpper (*due, *dueLane, onsetBeat);
+        if (upper <= 0.0 || (! onePass && upper <= 0.035))
+        {
+            dueLane->active = false;
+            --due->activeLanes;
+            continue;
+        }
+        if (! rateAvailable (time))
+        {
+            dueLane->earliest = addTicks (recentOns_[static_cast<std::size_t> (rateHead_)],
+                                         durationSamples (1.0));
+            continue;
+        }
+        if (generate (*due, *dueLane, time, blockStart, output, observer))
+        {
+            ++due->step;
+            ++dueLane->emitted;
+            if (due->manual && live.feedback == 0.0f)
+            {
+                dueLane->active = false;
+                --due->activeLanes;
+                continue;
+            }
+        }
+        // Manual repeats retain their input-snapshot clock, skipping missed ticks
+        // rather than accumulating debt or drifting after a scheduling collision.
+        if (due->manual)
+        {
+            const long double repeat = noteBeats[static_cast<std::size_t> (dueLane->settings.repeat)];
+            const long double steps = std::max (1.0L,
+                std::floor ((onsetBeat - dueLane->nextBeat) / repeat) + 1.0L);
+            dueLane->nextBeat += steps * repeat;
+        }
+        else
+            dueLane->nextBeat = onsetBeat + nextGap (*dueLane);
+        dueLane->earliest = addTicks (time, 1);
+        dueLane->priorityCap = addTicks (sampleAtBeat (dueLane->nextBeat, dueLane->earliest),
+                                        durationSamples (0.120));
     }
     applyPendingMode();
 }
 
-bool ParticleEngine::poolChoice (int index, bool tail, bool physicalOnly,
-                                SourceChoice& choice) const noexcept
+int ParticleEngine::scaleDegree (int pitch) const noexcept
 {
-    if (tail)
-    {
-        if (index >= tailSize_)
-            return false;
-        choice = tail_[static_cast<std::size_t> (index)];
-        return true;
-    }
-    const auto& source = sources_[static_cast<std::size_t> (index)];
-    if (! source.eligible || ! source.sounding || (physicalOnly && source.presses == 0))
-        return false;
-    choice = { index, source.velocity, source.lastStrike, source.order };
-    return true;
+    constexpr int major[] { 0, 2, 4, 5, 7, 9, 11 };
+    constexpr int minor[] { 0, 2, 3, 5, 7, 8, 10 };
+    if (scale_ == Scale::unset)
+        return -1;
+    const int* intervals = scale_ == Scale::minor ? minor : major;
+    const int relative = (pitch - root_ + 12) % 12;
+    for (int d = 0; d < 7; ++d)
+        if (intervals[d] == relative)
+            return d;
+    return -1;
 }
 
-bool ParticleEngine::hasSource() const noexcept
+int ParticleEngine::selectPitch (const Cloud& cloud, Lane& lane, SourceNote& source) noexcept
 {
-    if (tailSize_ != 0)
-        return true;
-    for (const auto& source : sources_)
-        if (source.eligible && source.sounding)
-            return true;
-    return false;
-}
-
-ParticleEngine::SourceChoice ParticleEngine::selectSource (double draw, Tick time) noexcept
-{
-    bool physical = false;
-    bool live = false;
-    for (const auto& source : sources_)
-    {
-        if (source.eligible && source.sounding)
-        {
-            live = true;
-            physical = physical || source.presses != 0;
-        }
-    }
-    const bool tail = ! live;
-    const int count = tail ? tailSize_ : keyCount;
-    SourceChoice choice;
-    SourceChoice result;
-    if (character_ == Character::echo)
-    {
-        SourceChoice first;
-        for (int index = 0; index < count; ++index)
-        {
-            if (! poolChoice (index, tail, physical, choice))
-                continue;
-            if (first.key < 0 || choice.order < first.order)
-                first = choice;
-            if (choice.order > echoOrder_ && (result.key < 0 || choice.order < result.order))
-                result = choice;
-        }
-        if (result.key < 0)
-            result = first;
-        if (result.key >= 0)
-            echoOrder_ = result.order;
-        return result;
-    }
-
-    int available = 0;
-    for (int index = 0; index < count; ++index)
-        if (poolChoice (index, tail, physical, choice))
-            ++available;
-
-    const auto weight = [this, time, available] (const SourceChoice& source) noexcept
-    {
-        if (character_ == Character::bloom && available > 1 && source.key == lastSource_)
-            return 0.0;
-        const double age = static_cast<double> (time - source.lastStrike) / sampleRate_;
-        return 1.0 + source.velocity / 127.0 + 2.0 / (1.0 + age);
-    };
+    struct Choice { int key = -1; int sourceIndex = 0; double weight = 0.0; };
+    std::array<Choice, 8> choices {};
+    int count = 0;
     double total = 0.0;
-    for (int index = 0; index < count; ++index)
-        if (poolChoice (index, tail, physical, choice))
-            total += weight (choice);
-    double target = draw * total;
-    for (int index = 0; index < count; ++index)
+    constexpr int major[] { 0, 2, 4, 5, 7, 9, 11 };
+    constexpr int minor[] { 0, 2, 3, 5, 7, 8, 10 };
+    const int* intervals = scale_ == Scale::minor ? minor : major;
+    for (int n = 0; n < cloud.noteCount; ++n)
     {
-        if (! poolChoice (index, tail, physical, choice))
+        const auto& note = cloud.notes[static_cast<std::size_t> (n)];
+        const int pitch = note.key % 128;
+        const int degree = scaleDegree (pitch);
+        const bool third = lane.intervalRole == IntervalRole::upThird
+                           || lane.intervalRole == IntervalRole::downThird;
+        const bool fifth = lane.intervalRole == IntervalRole::upFifth
+                           || lane.intervalRole == IntervalRole::downFifth;
+        const bool downward = lane.intervalRole == IntervalRole::downThird
+                              || lane.intervalRole == IntervalRole::downFifth
+                              || lane.intervalRole == IntervalRole::downOctave;
+        if ((third || fifth) && degree < 0)
+            continue; // Never turn an unavailable harmony lane into another octave.
+        int offset = 0;
+        if (third || fifth)
+        {
+            const int steps = (third ? 2 : 4) * (downward ? -1 : 1);
+            // Shift by a scale octave before division so negative degrees floor.
+            const int target = degree + steps + 7;
+            offset = intervals[target % 7] + 12 * (target / 7 - 1) - intervals[degree];
+        }
+        else if (lane.intervalRole == IntervalRole::upOctave)
+            offset = 12;
+        else if (lane.intervalRole == IntervalRole::downOctave)
+            offset = -12;
+        // Exactly one interval per lane/source; unavailable keys never substitute
+        // another register or role. Chord-member voice leading remains independent.
+        const int target = pitch + offset;
+        const int key = note.key / 128 * 128 + target;
+        if (target > 127 || target < 0 || (downward && target < 48) || ! keyAvailable (key))
             continue;
-        const double current = weight (choice);
-        if (current <= 0.0)
-            continue;
-        result = choice;
-        if (target < current)
-            break;
-        target -= current;
+        double weight = 1.0;
+        // Soft voice leading across ALL chord members, never highest-note-first.
+        if (lane.lastPitch >= 0)
+        {
+            weight *= 0.70 + 0.30 / (1.0 + std::abs (target - lane.lastPitch) / 7.0);
+            if (target == lane.lastPitch)
+                weight *= 0.35;
+        }
+        if (cloud.noteCount > 1 && n == lane.lastSource)
+            weight *= 0.60;
+        choices[static_cast<std::size_t> (count++)] = { key, n, weight };
+        total += weight;
     }
-    return result;
+    if (count == 0)
+        return -1;
+    double draw = randomUnit (lane.randomState) * total;
+    for (int i = 0; i < count; ++i)
+    {
+        const auto& choice = choices[static_cast<std::size_t> (i)];
+        if (draw < choice.weight || i == count - 1)
+        {
+            source = cloud.notes[static_cast<std::size_t> (choice.sourceIndex)];
+            lane.lastSource = choice.sourceIndex;
+            lane.lastPitch = choice.key % 128;
+            return choice.key;
+        }
+        draw -= choice.weight;
+    }
+    return -1;
+}
+
+long double ParticleEngine::onsetAt (const Cloud& cloud, long double beat) noexcept
+{
+    // On and Off share the same source-relative grid. Round the sample back to
+    // its musical endpoint; ceil here would add a cell at tempos such as 173 BPM.
+    const long double cellsPerBeat = cloud.manual ? 16.0L : 8.0L;
+    return cloud.triggerBeat
+        + std::round ((beat - cloud.triggerBeat) * cellsPerBeat) / cellsPerBeat;
+}
+
+void ParticleEngine::updateManualControls (const Controls& controls) noexcept
+{
+    for (std::size_t i = 0; i < manualControls_.size(); ++i)
+    {
+        auto value = controls.lanes[i];
+        const int lastNote = static_cast<int> (noteBeats.size()) - 1;
+        value.first = std::clamp (value.first, 0, lastNote);
+        value.repeat = std::clamp (value.repeat, 0, lastNote);
+        value.gate = std::clamp (value.gate, 0, lastNote);
+        value.cycle = std::clamp (value.cycle, 0, 3);
+        value.level = std::isfinite (value.level) ? std::clamp (value.level, 0.0f, 1.0f) : 0.0f;
+        value.feedback = std::isfinite (value.feedback)
+            ? std::clamp (value.feedback, 0.0f, 0.98f) : 0.0f;
+        value.motion = std::isfinite (value.motion) ? std::clamp (value.motion, 0.0f, 1.0f) : 0.0f;
+        manualControls_[i] = value;
+        // Disable is destructive only for future replies. Re-enable cannot revive
+        // old lanes, and the independent voice ledger keeps every outstanding Off.
+        if (! value.enabled || value.level == 0.0f)
+            for (auto& cloud : clouds_)
+                if (cloud.manual && cloud.lanes[i].active)
+                {
+                    cloud.lanes[i].active = false;
+                    --cloud.activeLanes;
+                }
+    }
+}
+
+double ParticleEngine::decayUpper (const Cloud& cloud, const Lane& lane,
+                                  long double onsetBeat) const noexcept
+{
+    const double elapsed = static_cast<double> (std::max (0.0L, onsetBeat - lane.firstBeat));
+    if (cloud.manual)
+    {
+        const auto& live = manualControls_[static_cast<std::size_t> (lane.intervalRole)];
+        // Feedback zero permits exactly one successful reply, even if the initial
+        // candidate was blocked. The cloud's beat/wall guards bound those retries.
+        if (live.feedback == 0.0f)
+            return lane.emitted == 0 ? live.level : 0.0;
+        const double repeat = noteBeats[static_cast<std::size_t> (lane.settings.repeat)];
+        return live.level * (elapsed == 0.0 ? 1.0
+            : std::pow (static_cast<double> (live.feedback), elapsed / repeat));
+    }
+    return lane.firstGain * std::exp (-lane.decay * elapsed)
+           / (1.0 + 0.08 * cloud.newerStrikes);
+}
+
+bool ParticleEngine::generate (Cloud& cloud, Lane& lane, Tick time, Tick blockStart,
+                               MidiOutput& output, GeneratedNoteObserver* observer) noexcept
+{
+    Voice* freeVoice = nullptr;
+    for (auto& voice : voices_)
+        if (voice.key < 0)
+        {
+            freeVoice = &voice;
+            break;
+        }
+    if (freeVoice == nullptr)
+    {
+        increment (skippedCandidates_);
+        return false;
+    }
+    SourceNote source;
+    const int key = selectPitch (cloud, lane, source);
+    if (key < 0)
+    {
+        increment (skippedCandidates_);
+        return false;
+    }
+    const long double onsetBeat = onsetAt (cloud, beatAt (time));
+    const double elapsed = static_cast<double> (std::max (0.0L, onsetBeat - lane.firstBeat));
+    const double ceiling = decayUpper (cloud, lane, onsetBeat);
+    // The first audible reply is deliberately attenuated, but not wave-modulated.
+    // Subsequent local rises remain below an independently falling exponential cap.
+    const auto& live = manualControls_[static_cast<std::size_t> (lane.intervalRole)];
+    const double cycle = static_cast<double> (1 << live.cycle);
+    const double wave = lane.emitted == 0 ? 1.0 : cloud.manual
+        ? (1.0 - live.motion) + live.motion * (0.5 + 0.5 * std::cos (lane.phase
+            + elapsed * 6.283185307179586 / cycle))
+        : 0.725 + 0.275 * std::cos (lane.phase
+            + elapsed * 6.283185307179586 / lane.wavePeriod);
+    const double master = cloud.manual ? std::clamp (amount_ / 0.30, 0.0, 1.0 / 0.30) : 1.0;
+    const double strength = ceiling * wave * master;
+    // Manual master may raise the lane level, but never exceed its own source.
+    const int maximum = cloud.manual ? std::clamp (source.velocity, 1, 127)
+        : std::max (1, static_cast<int> (source.velocity * 0.48));
+    const int velocity = std::clamp (static_cast<int> (std::lround (source.velocity * strength)),
+                                     1, maximum);
+    const double articulation = randomUnit (lane.randomState);
+    const bool third = lane.intervalRole == IntervalRole::upThird
+                       || lane.intervalRole == IntervalRole::downThird;
+    const bool fifth = lane.intervalRole == IntervalRole::upFifth
+                       || lane.intervalRole == IntervalRole::downFifth;
+    const long double gate = cloud.manual
+        ? static_cast<long double> (noteBeats[static_cast<std::size_t> (lane.settings.gate)])
+        : third ? (articulation < 0.5 ? 0.75L : 1.0L)
+        : fifth ? (articulation < 0.35 ? 0.5L : articulation < 0.80 ? 0.75L : 1.0L)
+        : (articulation < 0.45 ? 1.0L : 1.5L);
+    freeVoice->key = key;
+    freeVoice->down = true;
+    freeVoice->sostenuto = false;
+    freeVoice->endBeat = onsetBeat + gate;
+    freeVoice->earliestEnd = time;
+    freeVoice->hardEnd = addTicks (time, durationSamples (cloud.manual ? 3.0 : 1.500));
+    emitNote (static_cast<int> (time - blockStart), key, true, velocity, output);
+    recordNoteOn (time);
+    nextEmit_ = addTicks (time, durationSamples (0.020));
+    if (observer != nullptr)
+        observer->generatedNoteOn ({ static_cast<std::size_t> (lane.intervalRole), time,
+                                     static_cast<int> (time - blockStart), velocity,
+                                     static_cast<double> (beatAt (time) - cloud.triggerBeat),
+                                     cloud.manual ? noteBeats[static_cast<std::size_t> (lane.settings.repeat)] : 0.0 });
+    return true;
 }
 
 bool ParticleEngine::keyAvailable (int key) const noexcept
@@ -398,128 +650,17 @@ bool ParticleEngine::rateAvailable (Tick time) noexcept
     const Tick window = durationSamples (1.0);
     while (rateSize_ > 0 && time - recentOns_[static_cast<std::size_t> (rateHead_)] >= window)
     {
-        rateHead_ = (rateHead_ + 1) % voiceCount;
+        rateHead_ = (rateHead_ + 1) % rateCapacity;
         --rateSize_;
     }
-    return rateSize_ < voiceCount;
+    return rateSize_ < rateCapacity;
 }
 
 void ParticleEngine::recordNoteOn (Tick time) noexcept
 {
-    recentOns_[static_cast<std::size_t> ((rateHead_ + rateSize_) % voiceCount)] = time;
+    recentOns_[static_cast<std::size_t> ((rateHead_ + rateSize_) % rateCapacity)] = time;
     ++rateSize_;
     increment (generatedNoteOns_);
-}
-
-void ParticleEngine::generate (Tick time, Tick blockStart, MidiOutput& output) noexcept
-{
-    const double activity = activityAt (time);
-    const double chance = activity * (character_ == Character::pulse
-                                      ? std::min (1.0, policy_.rate * policy_.pulseStep) : 1.0);
-    const double trigger = randomUnit();
-    if (! hasSource())
-    {
-        cancelActivity();
-        increment (skippedCandidates_);
-        return;
-    }
-    if (trigger >= chance || ! rateAvailable (time))
-    {
-        increment (skippedCandidates_);
-        return;
-    }
-
-    Voice* freeVoice = nullptr;
-    for (auto& voice : voices_)
-        if (voice.key < 0)
-        {
-            freeVoice = &voice;
-            break;
-        }
-    if (freeVoice == nullptr)
-    {
-        increment (skippedCandidates_);
-        return;
-    }
-
-    SourceChoice source;
-    int key = -1;
-    for (int attempt = 0; attempt < 4 && key < 0; ++attempt)
-    {
-        source = selectSource (randomUnit(), time);
-        if (source.key < 0)
-            break;
-        const double second = character_ == Character::echo ? 0.0 : policy_.secondOctave;
-        const double octaveDraw = randomUnit();
-        const int preferred = octaveDraw < second ? 24
-                              : octaveDraw < second + policy_.upperOctave ? 12 : 0;
-        const int octaves[] { preferred, preferred == 0 ? 12 : 0,
-                             preferred == 24 ? 12 : 24 };
-        const int octaveCount = second > 0.0 ? 3 : 2;
-        for (int alternative = 0; alternative < octaveCount; ++alternative)
-        {
-            const int pitch = source.key % 128 + octaves[alternative];
-            const int candidate = source.key / 128 * 128 + pitch;
-            if (pitch < 128 && keyAvailable (candidate))
-            {
-                key = candidate;
-                break;
-            }
-        }
-    }
-    if (key < 0)
-    {
-        increment (skippedCandidates_);
-        return;
-    }
-
-    const double strength = policy_.velocity * (0.75 + 0.5 * randomUnit())
-                            * (0.45 + 0.55 * activity);
-    const int velocity = std::clamp (static_cast<int> (std::lround (source.velocity * strength)),
-                                     1, 127);
-    const double gate = 0.125 + 0.375 * randomUnit();
-    freeVoice->key = key;
-    freeVoice->down = true;
-    freeVoice->sostenuto = false;
-    freeVoice->endBeat = beatAt (time) + gate;
-    freeVoice->hardEnd = addTicks (time, durationSamples (2.0));
-    lastSource_ = source.key;
-    emitNote (static_cast<int> (time - blockStart), key, true, velocity, output);
-    recordNoteOn (time);
-}
-
-void ParticleEngine::rememberTail (int key) noexcept
-{
-    const auto& source = sources_[static_cast<std::size_t> (key)];
-    if (! activity_.active || ! source.eligible)
-        return;
-    const SourceChoice choice { key, source.velocity, source.lastStrike, source.order };
-    for (int index = 0; index < tailSize_; ++index)
-        if (tail_[static_cast<std::size_t> (index)].key == key)
-        {
-            tail_[static_cast<std::size_t> (index)] = choice;
-            return;
-        }
-    if (tailSize_ < tailCapacity)
-    {
-        tail_[static_cast<std::size_t> (tailSize_++)] = choice;
-        return;
-    }
-    int oldest = 0;
-    for (int index = 1; index < tailSize_; ++index)
-        if (tail_[static_cast<std::size_t> (index)].order < tail_[static_cast<std::size_t> (oldest)].order)
-            oldest = index;
-    if (choice.order > tail_[static_cast<std::size_t> (oldest)].order)
-        tail_[static_cast<std::size_t> (oldest)] = choice;
-}
-
-void ParticleEngine::removeChannelTail (int channel) noexcept
-{
-    int kept = 0;
-    for (int index = 0; index < tailSize_; ++index)
-        if (tail_[static_cast<std::size_t> (index)].key / 128 != channel)
-            tail_[static_cast<std::size_t> (kept++)] = tail_[static_cast<std::size_t> (index)];
-    tailSize_ = kept;
 }
 
 void ParticleEngine::refreshSources (int channel) noexcept
@@ -532,8 +673,7 @@ void ParticleEngine::refreshSources (int channel) noexcept
         if (source.sounding && source.presses == 0
             && ! pedal.sustain && ! (pedal.sostenuto && source.sostenuto))
         {
-            rememberTail (key);
-            source.sounding = source.sostenuto = source.eligible = false;
+            source.sounding = source.sostenuto = false;
         }
     }
 }
@@ -565,7 +705,7 @@ void ParticleEngine::releaseVoice (Voice& voice, Tick time, Tick blockStart,
 void ParticleEngine::releaseDue (Tick time, Tick blockStart, MidiOutput& output) noexcept
 {
     for (auto& voice : voices_)
-        if (voice.down && (voice.hardEnd <= time || sampleAtBeat (voice.endBeat, time) == time))
+        if (voice.down && (voiceTime (voice, time) == time))
             releaseVoice (voice, time, blockStart, output);
 }
 
@@ -587,13 +727,8 @@ void ParticleEngine::noteOn (int key, int velocity, Tick time, Tick blockStart,
                 releaseVoice (voice, time, blockStart, output);
     auto& source = sources_[static_cast<std::size_t> (key)];
     increment (source.presses);
-    increment (sourceOrder_);
-    source.order = sourceOrder_;
-    source.lastStrike = time;
-    source.velocity = static_cast<std::uint8_t> (velocity);
-    source.sounding = source.eligible = true;
-    tailSize_ = 0;
-    strike (velocity, time);
+    source.sounding = true;
+    strike (key, velocity, time);
 }
 
 void ParticleEngine::noteOff (int key, Tick time, Tick blockStart, MidiOutput& output) noexcept
@@ -653,13 +788,14 @@ void ParticleEngine::controller (int channel, int cc, int value, Tick time,
         for (int pitch = 0; pitch < 128; ++pitch)
         {
             auto& source = sources_[static_cast<std::size_t> (channel * 128 + pitch)];
-            source.eligible = false;
             if (cc == 120)
                 source.sounding = source.sostenuto = false;
             else
                 source.presses = 0;
         }
-        removeChannelTail (channel);
+        for (auto& seed : clouds_)
+            if (seed.activeLanes != 0 && seed.notes[0].key / 128 == channel)
+                seed = {};
         refreshSources (channel);
         for (auto& voice : voices_)
         {
@@ -669,8 +805,6 @@ void ParticleEngine::controller (int channel, int cc, int value, Tick time,
             if (cc == 120)
                 voice = {};
         }
-        if (! hasSource())
-            cancelActivity();
     }
 }
 
@@ -699,8 +833,11 @@ void ParticleEngine::handleInput (const MidiEventView& event, Tick time, Tick bl
 
 void ParticleEngine::applyPendingMode() noexcept
 {
-    if (requestedMode_ == activeMode_ || activity_.active)
+    if (requestedMode_ == activeMode_)
         return;
+    for (const auto& seed : clouds_)
+        if (seed.activeLanes != 0)
+            return;
     for (const auto& source : sources_)
         if (source.presses != 0 || source.sounding)
             return;
@@ -714,7 +851,7 @@ void ParticleEngine::applyPendingMode() noexcept
 }
 
 void ParticleEngine::process (int numSamples, const Transport& transport, const Controls& controls,
-                              MidiInput& input, MidiOutput& output) noexcept
+                              MidiInput& input, MidiOutput& output, GeneratedNoteObserver* observer) noexcept
 {
     if (numSamples <= 0)
         return;
@@ -724,27 +861,30 @@ void ParticleEngine::process (int numSamples, const Transport& transport, const 
     const bool newEpoch = updateClock (transport, numSamples);
     const bool reset = controlsSeen_
                        && (controls.resetSerial != resetSerial_ || controls.seed != seed_);
-    const Character newCharacter = controls.character == Character::echo ? Character::echo
-                                   : controls.character == Character::pulse ? Character::pulse
-                                                                           : Character::bloom;
-    const bool characterChanged = controlsSeen_ && newCharacter != character_;
-    amount_ = std::isfinite (controls.amount) ? std::clamp (static_cast<double> (controls.amount),
-                                                           0.0, 1.0) : 0.0;
-    policy_ = mapAmount (amount_);
-    character_ = newCharacter;
+    const int newRoot = std::clamp (controls.root, 0, 11);
+    const Scale newScale = controls.scale == Scale::major ? Scale::major
+                          : controls.scale == Scale::minor ? Scale::minor : Scale::unset;
+    const bool harmonyChanged = controlsSeen_ && (root_ != newRoot || scale_ != newScale);
+    const bool laneModeChanged = controlsSeen_ && manualLanes_ != controls.manualLanes;
+    manualLanes_ = controls.manualLanes;
+    updateManualControls (controls);
+    root_ = newRoot;
+    scale_ = newScale;
+    amount_ = std::isfinite (controls.amount)
+        ? std::clamp (static_cast<double> (controls.amount), 0.0, 1.0) : 0.0;
     requestedMode_ = controls.outputMode == OutputMode::particles ? OutputMode::particles
                                                                  : OutputMode::add;
     const bool newEnabled = amount_ > 0.0 && ! controls.bypass;
     if (newEpoch || reset || (enabled_ && ! newEnabled))
         cancelGeneration (blockStart, blockStart, output);
+    else if (harmonyChanged || laneModeChanged)
+        cancelClouds(); // Existing voices still own their original, finite Offs.
     seed_ = controls.seed;
     resetSerial_ = controls.resetSerial;
     if (! controlsSeen_ || newEpoch || reset)
-        reseed();
+        randomState_ = seed_ == 0 ? 0x6f7a6f31u : seed_;
     controlsSeen_ = true;
     enabled_ = newEnabled;
-    if (characterChanged && activity_.active)
-        scheduleCandidate (blockStart, true);
     applyPendingMode();
 
     Tick cursor = blockStart;
@@ -760,17 +900,17 @@ void ParticleEngine::process (int numSamples, const Transport& transport, const 
         }
         const int offset = event.sampleOffset;
         const Tick time = addTicks (blockStart, static_cast<Tick> (offset));
-        runBefore (time, cursor, blockStart, output);
+        runBefore (time, cursor, blockStart, output, observer);
         do
         {
             handleInput (event, time, blockStart, output);
             haveEvent = input.next (event);
         }
         while (haveEvent && event.sampleOffset == offset);
-        runAt (time, blockStart, output);
+        runAt (time, blockStart, output, observer);
         cursor = time;
     }
-    runBefore (blockEnd, cursor, blockStart, output);
+    runBefore (blockEnd, cursor, blockStart, output, observer);
     sampleClock_ = blockEnd;
 }
 

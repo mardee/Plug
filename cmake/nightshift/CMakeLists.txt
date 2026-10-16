@@ -1,0 +1,18 @@
+cmake_minimum_required(VERSION 3.22)
+project(ozoNightshiftRelease VERSION 0.3.0 LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
+
+get_filename_component(OZO_REPOSITORY_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+set(OZO_JUCE_SOURCE "${OZO_REPOSITORY_ROOT}/JUCE" CACHE PATH "JUCE 9.0.2 source directory")
+if(NOT EXISTS "${OZO_JUCE_SOURCE}/CMakeLists.txt")
+    message(FATAL_ERROR "JUCE source missing. Clone JUCE 9.0.2 into JUCE/ or set OZO_JUCE_SOURCE.")
+endif()
+add_subdirectory("${OZO_JUCE_SOURCE}" "${CMAKE_CURRENT_BINARY_DIR}/JUCE" EXCLUDE_FROM_ALL)
+include(CTest)
+add_subdirectory("${OZO_REPOSITORY_ROOT}/plugins/glint" "${CMAKE_CURRENT_BINARY_DIR}/plugins/glint")

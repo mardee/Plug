@@ -494,7 +494,8 @@ int main (int argc, char** argv)
     {
         Host host (registerBundle (argv[1]));
         host.setActual ("amount", 0.0f, 1.0f);
-        host.setActual ("character", 1.0f, 2.0f); // Bloom, from the published native choice order.
+        host.setActual ("key root", 0.0f, 11.0f);
+        host.setActual ("scale", 1.0f, 2.0f); // C major
         host.setActual ("output", 0.0f, 1.0f); // Add
         const std::vector<Event> dryInput {
             input (17, 0x90, 60, 83),
@@ -520,7 +521,8 @@ int main (int argc, char** argv)
         // The same instance is reused only after all source/output notes AND sustain are clear.
         host.reset();
         host.setActual ("amount", 0.8f, 1.0f);
-        host.setActual ("character", 1.0f, 2.0f); // Bloom
+        host.setActual ("key root", 0.0f, 11.0f);
+        host.setActual ("scale", 1.0f, 2.0f);
         host.setActual ("output", 1.0f, 1.0f); // Particles
         require (host.render ({}, blockSize).empty(), "Reset/idle mode switch emitted unexpected MIDI");
         const auto origin = host.position();
@@ -532,15 +534,15 @@ int main (int argc, char** argv)
             input (samplesPerSecond + 93, 0x80, 64, 0),
             input (samplesPerSecond + 93, 0x80, 67, 0)
         };
-        const auto particles = host.render (chord, 10 * samplesPerSecond);
+        const auto particles = host.render (chord, 26 * samplesPerSecond);
         checkBalancedAndIdle (chord);
         const auto generatedOns = checkBalancedAndIdle (particles);
-        require (generatedOns > 3, "Bloom did not produce additional notes beyond the three source notes");
+        require (generatedOns >= 3, "Sparkle engine did not produce a finite chord response");
         for (const auto& event : particles)
             if (isOn (event))
                 require (event.sample > origin + 23, "Particles leaked an original Note On: " + describe (event));
-        std::cout << "PASS AU Amount=0.8/Particles/Bloom: " << generatedOns
-                  << " generated Note Ons, balanced offs, no original On leakage, no keys/pedal down at 10 seconds\n";
+        std::cout << "PASS AU Amount=0.8/Particles/C-major sparkles: " << generatedOns
+                  << " generated Note Ons, balanced offs, no original On leakage, no keys/pedal down at 26 seconds\n";
         host.close();
         std::cout << "PASS AU tests (process-local registration; no editor, device, installation, or DAW)\n";
         return 0;

@@ -1,7 +1,7 @@
 #include <juce_audio_processors_headless/juce_audio_processors_headless.h>
 #include <algorithm>
 #include <array>
-#include <cstdint>
+#include <cmath>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -9,257 +9,177 @@
 
 namespace
 {
-constexpr double sampleRate = 48000.0;
-constexpr int blockSize = 128;
-
-void require (bool condition, const char* message)
-{
-    if (! condition)
-        throw std::runtime_error (message);
-}
-
-struct Event
-{
-    std::int64_t sample;
-    juce::MidiMessage message;
-};
-
-class PlayHead final : public juce::AudioPlayHead
+constexpr double sampleRate=48000.0;
+constexpr int block=128;
+void require(bool condition,const char* message){if(!condition)throw std::runtime_error(message);}
+struct Event { long long sample; juce::MidiMessage message; };
+class Clock final:public juce::AudioPlayHead
 {
 public:
-    std::int64_t sample = 0;
-    bool playing = true;
-
+    long long sample=0;
     juce::Optional<PositionInfo> getPosition() const override
     {
-        PositionInfo info;
-        info.setBpm (120.0);
-        info.setTimeInSamples (sample);
-        info.setTimeInSeconds (static_cast<double> (sample) / sampleRate);
-        info.setPpqPosition (static_cast<double> (sample) / (sampleRate * 0.5));
-        info.setIsPlaying (playing);
-        return info;
+        PositionInfo p;p.setBpm(120);p.setTimeInSamples(sample);p.setPpqPosition(double(sample)/24000.0);p.setIsPlaying(true);return p;
     }
 };
-
-void setParameter (juce::AudioPluginInstance& plugin, const juce::String& name, float value)
+void set(juce::AudioPluginInstance& p,const juce::String& name,float normalised)
 {
-    for (auto* parameter : plugin.getParameters())
-        if (parameter->getName (128).startsWithIgnoreCase (name))
-        {
-            parameter->setValueNotifyingHost (value);
-            return;
-        }
-    throw std::runtime_error ("Missing host parameter: " + name.toStdString());
+    for(auto* parameter:p.getParameters())if(parameter->getName(128)==name){parameter->setValueNotifyingHost(normalised);return;}
+    throw std::runtime_error("Missing parameter: "+name.toStdString());
 }
-
+bool same(const juce::MidiMessage& a,const juce::MidiMessage& b)
+{
+    return a.getRawDataSize()==b.getRawDataSize()&&std::equal(a.getRawData(),a.getRawData()+a.getRawDataSize(),b.getRawData());
+}
 class Host
 {
 public:
-    explicit Host (const juce::String& path, const juce::String& expectedName = "ozo GLINT")
+    explicit Host(const juce::String& path)
     {
-        formats.addFormat (std::make_unique<juce::VST3PluginFormatHeadless>());
-        juce::OwnedArray<juce::PluginDescription> descriptions;
-        formats.getFormat (0)->findAllTypesForFile (descriptions, path);
-        require (! descriptions.isEmpty(), "VST3 scan returned no descriptions");
-        require (descriptions[0]->name == expectedName, "VST3 scan exposes an unexpected product name");
-        juce::String error;
-        plugin = formats.createPluginInstance (*descriptions[0], sampleRate, blockSize, error);
-        if (plugin == nullptr)
-            throw std::runtime_error ("VST3 load failed: " + error.toStdString());
-        plugin->setPlayHead (&clock);
-        plugin->prepareToPlay (sampleRate, blockSize);
-        audio.setSize (std::max (plugin->getTotalNumInputChannels(), plugin->getTotalNumOutputChannels()),
-                       blockSize);
+        formats.addFormat(std::make_unique<juce::VST3PluginFormatHeadless>());
+        juce::OwnedArray<juce::PluginDescription> found;formats.getFormat(0)->findAllTypesForFile(found,path);
+        require(!found.isEmpty()&&(found[0]->name=="ozo NIGHTSHIFT"||found[0]->name=="ozo GLINT")&&found[0]->isInstrument,"NIGHTSHIFT instrument not found");
+        juce::String error;plugin=formats.createPluginInstance(*found[0],sampleRate,block,error);
+        if(!plugin)throw std::runtime_error(error.toStdString());
+        require(plugin->acceptsMidi()&&plugin->producesMidi(),"MIDI I/O missing");
+        require(plugin->getTotalNumInputChannels()==0&&plugin->getTotalNumOutputChannels()==2,"Wrong silent instrument bus layout");
+        for(auto* parameter:plugin->getParameters())
+            require(parameter->getName(128)!="Character"&&parameter->getName(128)!="Shine"&&parameter->getName(128)!="Rate","Retired mode parameter still exposed");
+        plugin->setPlayHead(&clock);plugin->prepareToPlay(sampleRate,block);
     }
-
-    ~Host()
+    ~Host(){plugin->setPlayHead(nullptr);plugin->releaseResources();}
+    std::vector<Event> render(const std::vector<Event>& input,long long length)
     {
-        plugin->setPlayHead (nullptr);
-        plugin->releaseResources();
-    }
-
-    std::vector<Event> render (const std::vector<Event>& input, std::int64_t length)
-    {
-        std::vector<Event> result;
-        std::size_t cursor = 0;
-        for (std::int64_t position = 0; position < length; position += blockSize)
+        std::vector<Event> output;std::size_t cursor=0;
+        juce::AudioBuffer<float> audio(2,block);juce::MidiBuffer midi;
+        for(long long at=0;at<length;at+=block)
         {
-            const auto samples = static_cast<int> (std::min<std::int64_t> (blockSize, length - position));
-            audio.setSize (audio.getNumChannels(), samples, false, false, true);
-            audio.clear();
-            midi.clear();
-            while (cursor < input.size() && input[cursor].sample < position + samples)
-            {
-                require (input[cursor].sample >= position, "Unsorted host input");
-                midi.addEvent (input[cursor].message, static_cast<int> (input[cursor].sample - position));
-                ++cursor;
-            }
-            clock.sample = position;
-            plugin->processBlock (audio, midi);
-            for (const auto metadata : midi)
-            {
-                require (metadata.samplePosition >= 0 && metadata.samplePosition < samples,
-                         "Host returned an out-of-block MIDI offset");
-                result.push_back ({ position + metadata.samplePosition, metadata.getMessage() });
-            }
+            const int count=int(std::min<long long>(block,length-at));audio.setSize(2,count,false,false,true);audio.clear();audio.setSample(0,0,.5f);midi.clear();
+            while(cursor<input.size()&&input[cursor].sample<at+count)
+            {require(input[cursor].sample>=at,"Unsorted fixture");midi.addEvent(input[cursor].message,int(input[cursor].sample-at));++cursor;}
+            clock.sample=at;plugin->processBlock(audio,midi);
+            require(audio.getMagnitude(0,count)==0.0f,"MIDI instrument emitted audio");
+            for(const auto event:midi){require(event.samplePosition>=0&&event.samplePosition<count,"Invalid event offset");output.push_back({at+event.samplePosition,event.getMessage()});}
         }
-        return result;
+        return output;
     }
-
-    juce::AudioPluginFormatManager formats;
-    PlayHead clock;
-    std::unique_ptr<juce::AudioPluginInstance> plugin;
-    juce::AudioBuffer<float> audio;
-    juce::MidiBuffer midi;
+    juce::AudioPluginFormatManager formats;Clock clock;std::unique_ptr<juce::AudioPluginInstance> plugin;
 };
-
-bool sameMessage (const juce::MidiMessage& a, const juce::MidiMessage& b)
+void balanced(const std::vector<Event>& events)
 {
-    return a.getRawDataSize() == b.getRawDataSize()
-        && std::equal (a.getRawData(), a.getRawData() + a.getRawDataSize(), b.getRawData());
-}
-
-void checkBalanced (const std::vector<Event>& events)
-{
-    std::array<int, 16 * 128> keys {};
-    int ons = 0;
-    for (const auto& event : events)
+    std::array<int,2048> notes{};int ons=0;
+    for(const auto& event:events)
     {
-        const auto& message = event.message;
-        if (! message.isNoteOnOrOff())
-            continue;
-        auto& count = keys[static_cast<std::size_t> ((message.getChannel() - 1) * 128 + message.getNoteNumber())];
-        if (message.isNoteOn())
-        {
-            ++ons;
-            require (count == 0, "Generated same-key overlap crossed the VST3 wrapper");
-            ++count;
-        }
-        else
-        {
-            require (count > 0, "Unowned Note Off crossed the VST3 wrapper");
-            --count;
-        }
+        const auto& m=event.message;if(!m.isNoteOnOrOff())continue;
+        auto& n=notes[(m.getChannel()-1)*128+m.getNoteNumber()];
+        if(m.isNoteOn()){require(n==0,"Overlapping generated key");++n;++ons;}
+        else {require(n>0,"Unowned generated Off");--n;}
     }
-    require (ons > 0, "VST3 generated no notes");
-    require (std::all_of (keys.begin(), keys.end(), [] (int n) { return n == 0; }),
-             "VST3 left generated keys down after the tail");
+    require(ons>0,"No sparkles generated");require(std::all_of(notes.begin(),notes.end(),[](int n){return n==0;}),"Unfinished generated notes");
 }
-}
-
-int main (int argc, char** argv)
+std::vector<Event> melody(int pitch)
 {
-    if (argc != 2 && argc != 3)
+    std::vector<Event> result;
+    for(int i=0;i<24;++i)
     {
-        std::cerr << "Usage: ozoGlintHostTests /path/to/GLINT.vst3 [/path/to/legacy-MIDI-Delay.vst3]\n";
-        return 2;
+        result.push_back({i*48000+31,juce::MidiMessage::noteOn(1,pitch,juce::uint8(100))});
+        result.push_back({i*48000+4800,juce::MidiMessage::noteOff(1,pitch)});
     }
-    const juce::String path (argv[1]);
+    return result;
+}
+}
+int main(int argc,char** argv)
+{
+    if(argc!=2&&argc!=3){std::cerr<<"Usage: ozoGlintHostTests plugin.vst3 [demo-output-directory]\n";return 2;}
     try
     {
         {
-            Host host (path);
-            require (host.plugin->acceptsMidi() && host.plugin->producesMidi(), "MIDI ports are not exposed");
-            require (host.plugin->getLatencySamples() == 0, "Unexpected plugin latency");
-            setParameter (*host.plugin, "Amount", 0.0f);
-            const std::vector<Event> input {
-                { 17, juce::MidiMessage::noteOn (1, 60, static_cast<juce::uint8> (83)) },
-                { 127, juce::MidiMessage::noteOn (2, 67, static_cast<juce::uint8> (51)) },
-                { 300, juce::MidiMessage::controllerEvent (1, 64, 127) },
-                { 481, juce::MidiMessage::noteOff (1, 60) },
-                { 511, juce::MidiMessage::noteOff (2, 67) },
-                { 600, juce::MidiMessage::controllerEvent (1, 64, 0) }
-            };
-            const auto output = host.render (input, 1024);
-            require (output.size() == input.size(), "MIDI pass-through changed the event count");
-            for (std::size_t i = 0; i < input.size(); ++i)
-                require (input[i].sample == output[i].sample && sameMessage (input[i].message, output[i].message),
-                         "MIDI pass-through changed a timestamp or payload");
-            std::cout << "PASS VST3 note / sustain pass-through with sample offsets\n";
+            Host h{juce::String(argv[1])};set(*h.plugin,"Amount",0);
+            const std::vector<Event> input{{17,juce::MidiMessage::noteOn(1,60,juce::uint8(83))},{123,juce::MidiMessage::controllerEvent(1,64,127)},{333,juce::MidiMessage::noteOff(1,60)},{601,juce::MidiMessage::controllerEvent(1,64,0)}};
+            auto out=h.render(input,1024);require(out.size()==input.size(),"Dry MIDI event count changed");
+            for(std::size_t i=0;i<input.size();++i)require(out[i].sample==input[i].sample&&same(out[i].message,input[i].message),"Original melody changed");
+            std::cout<<"PASS VST3 identity, silent output and exact original MIDI\n";
         }
-        for (int character = 0; character < 3; ++character)
+        for(int mode=0;mode<3;++mode)
         {
-            Host host (path);
-            setParameter (*host.plugin, "Amount", 0.8f);
-            setParameter (*host.plugin, "Character", static_cast<float> (character) * 0.5f);
-            setParameter (*host.plugin, "Output", 1.0f);
-            const std::vector<Event> input {
-                { 23, juce::MidiMessage::noteOn (1, 60, static_cast<juce::uint8> (90)) },
-                { 23, juce::MidiMessage::noteOn (1, 64, static_cast<juce::uint8> (80)) },
-                { 23, juce::MidiMessage::noteOn (1, 67, static_cast<juce::uint8> (75)) },
-                { 48000, juce::MidiMessage::noteOff (1, 60) },
-                { 48000, juce::MidiMessage::noteOff (1, 64) },
-                { 48000, juce::MidiMessage::noteOff (1, 67) }
-            };
-            const auto output = host.render (input, 12 * 48000);
-            checkBalanced (output);
-            for (const auto& event : output)
-                if (event.message.isNoteOn())
-                {
-                    const auto note = event.message.getNoteNumber();
-                    require ((note >= 60 && note <= 84 && (note - 60) % 12 == 0)
-                          || (note >= 64 && note <= 88 && (note - 64) % 12 == 0)
-                          || (note >= 67 && note <= 91 && (note - 67) % 12 == 0),
-                             "VST3 generated an unrelated pitch");
-                    require (event.sample > 23, "Particles mode leaked original Note On");
-                }
-            std::cout << "PASS VST3 character " << character << " generated balanced particles ("
-                      << output.size() << " events)\n";
-        }
-        {
-            Host host (path);
-            setParameter (*host.plugin, "Amount", 0.63f);
-            setParameter (*host.plugin, "Character", 1.0f);
-            setParameter (*host.plugin, "Output", 1.0f);
-            juce::MemoryBlock saved;
-            host.plugin->getStateInformation (saved);
-            require (saved.getSize() > 0, "Empty VST3 state");
-            setParameter (*host.plugin, "Amount", 0.0f);
-            host.plugin->setStateInformation (saved.getData(), static_cast<int> (saved.getSize()));
-            const auto output = host.render ({
-                { 0, juce::MidiMessage::noteOn (1, 62, static_cast<juce::uint8> (96)) },
-                { 24000, juce::MidiMessage::noteOff (1, 62) }
-            }, 12 * 48000);
-            checkBalanced (output);
-            require (output.front().sample > 0, "Restored Particles mode leaked original input");
-            std::cout << "PASS VST3 state restore without an editor\n";
-        }
-        if (argc == 3)
-        {
-            juce::MemoryBlock legacyState;
-            const std::vector<Event> input {
-                { 17, juce::MidiMessage::noteOn (1, 60, static_cast<juce::uint8> (92)) },
-                { 17, juce::MidiMessage::noteOn (1, 64, static_cast<juce::uint8> (87)) },
-                { 24000, juce::MidiMessage::noteOff (1, 60) },
-                { 24000, juce::MidiMessage::noteOff (1, 64) }
-            };
-            std::vector<Event> legacyOutput;
+            Host h{juce::String(argv[1])};set(*h.plugin,"Output",1);set(*h.plugin,"Amount",.3f);
+            set(*h.plugin,"Key Root",mode==2?9.0f/11.0f:0.0f);set(*h.plugin,"Scale",mode*.5f);
+            int source=mode==2?71:62;auto out=h.render(melody(source),52*48000);balanced(out);
+            bool third=false,fifth=false,octave=false;
+            for(auto& e:out)if(e.message.isNoteOn())
             {
-                Host legacy (juce::String (argv[2]), "ozo MIDI Delay");
-                setParameter (*legacy.plugin, "Amount", 0.82f);
-                setParameter (*legacy.plugin, "Character", 0.5f);
-                setParameter (*legacy.plugin, "Output", 1.0f);
-                legacy.plugin->getStateInformation (legacyState);
-                legacyOutput = legacy.render (input, 12 * 48000);
+                int n=e.message.getNoteNumber(),pc=n%12;
+                require(e.message.getVelocity()<=48,"Echoes must immediately retreat below half of source velocity");
+                if(mode==0)require(pc==source%12,"Unset key added guessed harmony");
+                if(mode==1){require(pc==2||pc==5||pc==9||pc==11||pc==7,"D in C major must use only its seven lane relations");third|=pc==5;fifth|=pc==9;}
+                if(mode==2){require(pc==11||pc==2||pc==5||pc==7||pc==4,"B in A minor must use only its seven lane relations");third|=pc==2;fifth|=pc==5;}
+                octave|=pc==source%12&&n>=source+12;
             }
-            require (legacyState.getSize() > 0, "Legacy plugin returned no state");
-            Host renamed (path);
-            renamed.plugin->setStateInformation (legacyState.getData(), static_cast<int> (legacyState.getSize()));
-            const auto renamedOutput = renamed.render (input, 12 * 48000);
-            checkBalanced (renamedOutput);
-            require (legacyOutput.size() == renamedOutput.size(), "Rename changed legacy-state event count");
-            for (std::size_t i = 0; i < legacyOutput.size(); ++i)
-                require (legacyOutput[i].sample == renamedOutput[i].sample
-                         && sameMessage (legacyOutput[i].message, renamedOutput[i].message),
-                         "Rename changed MIDI generated from actual legacy-plugin state");
-            std::cout << "PASS actual pre-GLINT VST3 state restored with identical MIDI output\n";
+            require(octave,"No octave light");if(mode)require(third&&fifth,"Diatonic third/fifth never appeared");
+            std::cout<<"PASS VST3 harmony mode "<<mode<<", "<<out.size()/2<<" finite light events\n";
+        }
+        {
+            Host h{juce::String(argv[1])};set(*h.plugin,"Amount",.6f);set(*h.plugin,"Key Root",7.0f/11.0f);set(*h.plugin,"Scale",.5f);
+            h.render({},128);juce::MemoryBlock state;h.plugin->getStateInformation(state);
+            set(*h.plugin,"Amount",0);h.plugin->setStateInformation(state.getData(),int(state.getSize()));
+            auto out=h.render(melody(67),52*48000);require(out.size()>48,"State restore did not restore sparkles");
+            std::cout<<"PASS VST3 current state restore\n";
+        }
+        {
+            Host h{juce::String(argv[1])};set(*h.plugin,"Amount",.3f);set(*h.plugin,"Output",1);
+            set(*h.plugin,"Key Root",0);set(*h.plugin,"Scale",.5f);
+            auto out=h.render({{0,juce::MidiMessage::noteOn(1,74,juce::uint8(100))},
+                               {240,juce::MidiMessage::noteOff(1,74)}},26*48000);
+            balanced(out);
+            std::array<int,3> counts{};std::array<long long,3> last{};
+            for(const auto& e:out)if(e.message.isNoteOn())
+            {
+                const int n=e.message.getNoteNumber();int lane=n==77?0:n==81?1:n==86?2:-1;
+                require(lane>=0,"Default isolated source emitted an unexpected lane");
+                ++counts[std::size_t(lane)];last[std::size_t(lane)]=e.sample;
+            }
+            for(int i=0;i<3;++i){require(counts[std::size_t(i)]>3,"Lane still ends after only three replies");require(last[std::size_t(i)]>3*48000,"Lane tail still ends prematurely");}
+            std::cout<<"PASS VST3 sustained lanes: third="<<counts[0]<<" fifth="<<counts[1]<<" octave="<<counts[2]
+                     <<"; last On seconds="<<last[0]/48000.0<<", "<<last[1]/48000.0<<", "<<last[2]/48000.0<<'\n';
+        }
+        {
+            Host h{juce::String(argv[1])};set(*h.plugin,"Amount",.3f);set(*h.plugin,"Output",1);
+            for(int lane=1;lane<=7;++lane)set(*h.plugin,"L"+juce::String(lane)+" Enable",lane==4?1.0f:0.0f);
+            set(*h.plugin,"L4 First",4.0f/9);set(*h.plugin,"L4 Repeat",6.0f/9);
+            set(*h.plugin,"L4 Gate",2.0f/9);set(*h.plugin,"L4 Feedback",.8f/.98f);
+            set(*h.plugin,"L4 Level",.4f);set(*h.plugin,"L4 Motion",0);
+            auto out=h.render({{0,juce::MidiMessage::noteOn(1,60,juce::uint8(100))},
+                               {240,juce::MidiMessage::noteOff(1,60)}},52*48000);
+            balanced(out);int count=0;const int velocities[]{40,32,26};
+            for(const auto& event:out)if(event.message.isNoteOn())
+            {
+                require(event.message.getNoteNumber()==72,"Manual enable/role mapping failed");
+                if(count<3){require(event.sample==12000+count*24000,"Manual First/Repeat mismatch");require(event.message.getVelocity()==velocities[count],"Manual feedback/level mapping mismatch");}
+                ++count;
+            }
+            require(count>=3,"Manual lane did not repeat");
+            std::cout<<"PASS VST3 independent First, Repeat, Feedback, Level and lane switches\n";
+        }
+        if(argc==3)
+        {
+            const juce::File folder{juce::String(argv[2])};
+            require(!folder.exists(),"Refusing to overwrite demonstration directory");
+            require(folder.createDirectory().wasOk(),"Cannot create demo directory");
+            const int notes[]{60,62,64,67,69,67,64,62};std::vector<Event> input;
+            for(int i=0;i<8;++i){input.push_back({i*48000,juce::MidiMessage::noteOn(1,notes[i],juce::uint8(88))});input.push_back({i*48000+16000,juce::MidiMessage::noteOff(1,notes[i])});}
+            Host h{juce::String(argv[1])};set(*h.plugin,"Amount",.45f);set(*h.plugin,"Key Root",0);set(*h.plugin,"Scale",.5f);
+            const auto output=h.render(input,36*48000);
+            auto save=[&](const std::vector<Event>& events,const char* name)
+            {
+                juce::MidiMessageSequence track;track.addEvent(juce::MidiMessage::tempoMetaEvent(500000));
+                for(auto e:events){e.message.setTimeStamp(double(e.sample)*960.0/24000.0);track.addEvent(e.message);}
+                track.updateMatchedPairs();juce::MidiFile midi;midi.setTicksPerQuarterNote(960);midi.addTrack(track);
+                auto stream=folder.getChildFile(name).createOutputStream();require(stream&&stream->openedOk()&&midi.writeTo(*stream),"Cannot write MIDI demo");
+            };
+            save(input,"01-original-C-major.mid");save(output,"02-glint-C-major.mid");
+            std::cout<<"DEMO "<<folder.getFullPathName()<<'\n';
         }
         return 0;
     }
-    catch (const std::exception& error)
-    {
-        std::cerr << "FAIL " << error.what() << '\n';
-        return 1;
-    }
+    catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
 }

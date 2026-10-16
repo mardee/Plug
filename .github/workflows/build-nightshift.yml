@@ -1,0 +1,75 @@
+name: Build NIGHTSHIFT Windows VST3
+
+on:
+  push:
+    branches:
+      - 'release/nightshift-*'
+    paths:
+      - '.github/workflows/build-nightshift.yml'
+      - 'cmake/nightshift/**'
+      - 'plugins/glint/**'
+      - 'scripts/package_nightshift.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightshift-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  JUCE_VERSION: '9.0.2'
+
+jobs:
+  windows-vst3:
+    name: NIGHTSHIFT / Windows x64 / VST3
+    runs-on: windows-2022
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Restore JUCE source
+        id: juce
+        uses: actions/cache@v4
+        with:
+          path: JUCE
+          key: nightshift-juce-${{ env.JUCE_VERSION }}-${{ runner.os }}
+      - name: Fetch JUCE
+        if: steps.juce.outputs.cache-hit != 'true'
+        run: git clone --branch "$env:JUCE_VERSION" --depth 1 https://github.com/juce-framework/JUCE.git JUCE
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Configure isolated NIGHTSHIFT build
+        run: >-
+          cmake -S cmake/nightshift -B build/nightshift-windows -G Ninja
+          -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+      - name: Build Windows VST3
+        run: cmake --build build/nightshift-windows --config Release --target ozoGLINT_VST3 --parallel 4
+      - name: Package and verify Windows x64 binary
+        run: >-
+          python scripts/package_nightshift.py --platform windows
+          --release-dir build/nightshift-windows/plugins/glint/ozoGLINT_artefacts/Release
+          --output-dir dist/nightshift --commit "$env:GITHUB_SHA"
+      - name: Upload installable Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ozo-NIGHTSHIFT-Windows-x64-VST3
+          path: |
+            dist/nightshift/*.zip
+            dist/nightshift/*.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - name: Publish build summary
+        run: |
+          "## ozo NIGHTSHIFT Windows VST3" >> $env:GITHUB_STEP_SUMMARY
+          "Built from $env:GITHUB_SHA with JUCE $env:JUCE_VERSION and MSVC x64." >> $env:GITHUB_STEP_SUMMARY
+          "Package includes the complete .vst3 directory, installation notes and SHA-256 checksum." >> $env:GITHUB_STEP_SUMMARY
+          "Validation: compilation, bundle integrity and PE x64 architecture. No interactive DAW validation was run." >> $env:GITHUB_STEP_SUMMARY
